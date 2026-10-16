@@ -1,0 +1,21 @@
+name: CI
+
+# Tests on Python 3.10 and builds on every push and pull request. No
+# secrets.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5
+      - run: uv run --python 3.10 --no-project --with pytest==9.1.1 --with httpx==0.28.1 pytest -q -p no:cacheprovider tests
+      - run: uv build

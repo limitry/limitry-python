@@ -1,0 +1,23 @@
+name: Pull request
+
+# This repository is generated from Limitry's own repository
+# (CONTRIBUTING.md). No checkout and no code from the pull request runs
+# here: the job only comments.
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  explain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Explain how contributions work
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body "Thank you! This repository is generated from Limitry's own repository, so we don't merge pull requests here. We read every one: if we take this change, we port it with you credited as a co-author, it ships in the next release, and we close this pull request with a link to it. Details: CONTRIBUTING.md."
