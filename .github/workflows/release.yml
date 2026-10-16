@@ -8,6 +8,11 @@ on:
   push:
     tags: ["v*"]
 
+# One release at a time, so each sees the one before it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
