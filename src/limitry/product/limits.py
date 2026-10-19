@@ -22,15 +22,19 @@
 # refuses (reason `unavailable`) while `open`, the default, runs the
 # block unmetered.
 #
-# Retries are safe: each guard or hold sends one Idempotency-Key, and a
-# check that failed fast (a connection error, a 5xx) is sent once more
-# with it, so it counts once. A hold whose check timed out may have been
+# Retries are safe, and follow the TypeScript SDK's rule exactly: each
+# guard or hold sends one Idempotency-Key, and a check is retried with it
+# (a network error, 408, 429, 5xx; at most twice, the client's backoff)
+# all within ONE time budget, `timeout` (1.5 s) — so it counts once and
+# never waits longer than that. A hold whose check timed out may have been
 # granted all the same: once the block is done, `hold` sends the check
 # again with the same key (a replay, nothing counted twice) and releases
-# the hold it finds. Commits and releases retry too.
+# the hold it finds. Commits and releases retry the same way within 5 s.
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager, contextmanager
@@ -47,7 +51,14 @@ from typing import (
 
 import httpx
 
-from .._runtime import ApiError
+from .._runtime import (
+    DEFAULT_MAX_RETRIES,
+    ApiError,
+    Operation,
+    _backoff,
+    _retryable,
+    _wait,
+)
 
 
 class Subject(TypedDict):
@@ -59,21 +70,18 @@ FailMode = Literal["open", "closed"]
 _UNREACHABLE: Any = object()
 # No answer in time: unlike an error, the check may have been decided.
 _TIMED_OUT: Any = object()
-# A settle (or a replay to find a hold): per attempt, and how many.
+# How long a settle (or a replay to find a hold) may take, retries included.
 _SETTLE_TIMEOUT = 5.0
-_SETTLE_ATTEMPTS = 3
 _MEMORY = 10_000
-
-
-def _refusal(decision: Dict[str, Any], limit: Optional[str]) -> str:
-    """A refusal in the CLI's words, naming the limit rather than its id."""
-    retry_after = decision.get("retryAfterSeconds")
-    retry = f" Try again in {retry_after} s." if retry_after is not None else ""
-    found = next((r for r in decision.get("remaining") or [] if r.get("limit") == limit), None)
-    if found is None:
-        return f"Refused: limit {limit or '(unknown)'} is used up.{retry}"
-    resets = f", resets {found['resetsAt']}" if found.get("resetsAt") else ""
-    return f"Refused by {found['name']}: {found['remaining']} {found['unit']} left{resets}.{retry}"
+# The largest cost a commit takes.
+_MAX_COST = 1_000_000_000
+_STANDING: Operation = {
+    "method": "GET",
+    "path": "/usage/standing",
+    "query": ["kind", "id", "shared"],
+    "body": False,
+    "names": {},
+}
 
 
 class LimitExceeded(Exception):
@@ -84,10 +92,9 @@ class LimitExceeded(Exception):
         limit = ((decision or {}).get("reason") or {}).get("limit")
         if reason == "unavailable":
             message = "Limitry could not be reached and a limit denies when unreachable"
-        elif reason == "too_many_reservations":
-            message = "Too many open reservations for this subject"
         else:
-            message = _refusal(decision or {}, limit)
+            # The API's own sentence (reason.message), one wording everywhere.
+            message = ((decision or {}).get("reason") or {}).get("message") or "Refused"
         super().__init__(message)
         self.reason: str = reason
         """`limit_exceeded`, `too_many_reservations` or `unavailable`."""
@@ -105,11 +112,25 @@ class Held:
         self._extend = extend
 
     def cost(self, units: float) -> None:
-        """The cost actually used — committed when the block ends. Default: the estimate."""
-        self.used = units
+        """The cost actually used — committed when the block ends. Default: the estimate.
+
+        A whole number from 0 to 1,000,000,000, as the API commits: anything
+        else raises ValueError here, in your code, rather than a commit the
+        API refuses after the work (whose usage would go uncounted)."""
+        if (
+            isinstance(units, bool)
+            or not isinstance(units, (int, float))
+            or not float(units).is_integer()
+            or not 0 <= units <= _MAX_COST
+        ):
+            raise ValueError(
+                f"held.cost({units!r}): the cost must be a whole number from 0 to {_MAX_COST}"
+            )
+        self.used = int(units)
 
     def extend(self, ttl_seconds: Optional[int] = None) -> None:
-        """Keep the hold for longer work: it expires `ttl_seconds` from now (default 300)."""
+        """Keep the hold for longer work: it expires `ttl_seconds` from now (default
+        300, 1 to 3600). Raises the API's error, such as for an expired hold."""
         if self._extend:
             self._extend(ttl_seconds)
 
@@ -174,6 +195,13 @@ def _answer(response: httpx.Response) -> Any:
     )
 
 
+def _standing_query(subject: Subject, shared: Optional[List[Subject]]) -> Dict[str, Any]:
+    query: Dict[str, Any] = {"kind": subject["kind"], "id": subject["id"]}
+    if shared:
+        query["shared"] = ",".join(f"{s['kind']}:{s['id']}" for s in shared)
+    return query
+
+
 class _Memory:
     """The last fail mode seen per subject + action (closed if any limit is)."""
 
@@ -196,6 +224,7 @@ class ProductMethods:
     _http: httpx.Client
     _base_url: str
     _headers: Dict[str, str]
+    _call: Any
 
     def _limits_memory(self) -> _Memory:
         memory = self.__dict__.get("_limitry_memory")
@@ -203,23 +232,40 @@ class ProductMethods:
             memory = self.__dict__["_limitry_memory"] = _Memory()
         return memory
 
-    def _check(self, body: Dict[str, Any], timeout: float, key: str) -> Any:
+    def _send(self, path: str, body: Any, key: str, budget: float) -> Any:
+        """The answer — or _TIMED_OUT (the budget ran out) or _UNREACHABLE
+        (a network error on the last try). The client's retry rule, inside
+        one time budget: the TypeScript SDK's `check` and `settle`."""
         headers = {**self._headers, "idempotency-key": key}
-        for attempt in range(2):
+        deadline = time.monotonic() + budget
+        attempt = 0
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return _TIMED_OUT
+            last = attempt >= getattr(self, "_max_retries", DEFAULT_MAX_RETRIES)
             try:
                 response = self._http.post(
-                    self._base_url + "/checks", json=body, headers=headers, timeout=timeout
+                    self._base_url + path, json=body, headers=headers, timeout=left
                 )
             except httpx.TimeoutException:
                 return _TIMED_OUT
             except httpx.HTTPError:
-                if attempt == 0:
-                    continue
-                return _UNREACHABLE
-            if response.status_code >= 500 and attempt == 0:
-                continue
-            return _answer(response)
-        return _UNREACHABLE
+                if last:
+                    return _UNREACHABLE
+                delay: Optional[float] = _backoff(attempt)
+            else:
+                delay = None if last or not _retryable(response) else _wait(response, attempt)
+                if delay is None:
+                    return response
+            if delay >= deadline - time.monotonic():
+                return _TIMED_OUT
+            time.sleep(delay)
+            attempt += 1
+
+    def _check(self, body: Dict[str, Any], timeout: float, key: str) -> Any:
+        response = self._send("/checks", body, key, timeout)
+        return response if response is _TIMED_OUT or response is _UNREACHABLE else _answer(response)
 
     def _release_unheard(self, body: Dict[str, Any], key: str) -> None:
         # After a hold's check timed out: ask again with the same key (a
@@ -231,15 +277,7 @@ class ProductMethods:
     def _settle(self, path: str, body: Optional[Dict[str, Any]]) -> None:
         # Settling never fails the caller's work: it is retried (the same
         # settle answers the same), and a lost one expires by itself.
-        for _ in range(_SETTLE_ATTEMPTS):
-            try:
-                response = self._http.post(
-                    self._base_url + path, json=body, headers=self._headers, timeout=_SETTLE_TIMEOUT
-                )
-            except httpx.HTTPError:
-                continue
-            if response.status_code < 500:
-                return
+        self._send(path, body, str(uuid.uuid4()), _SETTLE_TIMEOUT)
 
     @contextmanager
     def guard(
@@ -307,7 +345,8 @@ class ProductMethods:
         path = f"/reservations/{reservation['id']}"
 
         def extend(ttl_seconds: Optional[int]) -> None:
-            body = {"ttlSeconds": ttl_seconds} if ttl_seconds else {}
+            # Passed as given: the API refuses a bad one (0, past 3600).
+            body = {} if ttl_seconds is None else {"ttlSeconds": ttl_seconds}
             _raise_for(
                 self._http.post(
                     self._base_url + path + "/extend", json=body, headers=self._headers, timeout=timeout
@@ -326,21 +365,8 @@ class ProductMethods:
         """Where a subject stands on every limit on it: used, remaining,
         resetsAt (the answer keeps the API's camelCase keys) — for showing
         an end user. Not a check: nothing is counted."""
-        params = {"kind": subject["kind"], "id": subject["id"]}
-        if shared:
-            params["shared"] = ",".join(f"{s['kind']}:{s['id']}" for s in shared)
-        response = self._http.get(
-            self._base_url + "/usage/standing", params=params, headers=self._headers
-        )
-        if response.status_code >= 400:
-            error = (response.json() if response.content else {}).get("error") or {}
-            raise ApiError(
-                response.status_code,
-                error.get("code") or "http_error",
-                error.get("message") or f"HTTP {response.status_code}",
-                error.get("requestId"),
-            )
-        return response.json()
+        # The client's own call: its retries, and its errors (any body).
+        return self._call(_STANDING, {}, _standing_query(subject, shared))
 
 
 class AsyncProductMethods:
@@ -349,6 +375,7 @@ class AsyncProductMethods:
     _http: httpx.AsyncClient
     _base_url: str
     _headers: Dict[str, str]
+    _call: Any
 
     def _limits_memory(self) -> _Memory:
         memory = self.__dict__.get("_limitry_memory")
@@ -356,23 +383,38 @@ class AsyncProductMethods:
             memory = self.__dict__["_limitry_memory"] = _Memory()
         return memory
 
-    async def _check(self, body: Dict[str, Any], timeout: float, key: str) -> Any:
+    async def _send(self, path: str, body: Any, key: str, budget: float) -> Any:
+        """The answer, _TIMED_OUT or _UNREACHABLE (see ProductMethods._send)."""
         headers = {**self._headers, "idempotency-key": key}
-        for attempt in range(2):
+        deadline = time.monotonic() + budget
+        attempt = 0
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return _TIMED_OUT
+            last = attempt >= getattr(self, "_max_retries", DEFAULT_MAX_RETRIES)
             try:
                 response = await self._http.post(
-                    self._base_url + "/checks", json=body, headers=headers, timeout=timeout
+                    self._base_url + path, json=body, headers=headers, timeout=left
                 )
             except httpx.TimeoutException:
                 return _TIMED_OUT
             except httpx.HTTPError:
-                if attempt == 0:
-                    continue
-                return _UNREACHABLE
-            if response.status_code >= 500 and attempt == 0:
-                continue
-            return _answer(response)
-        return _UNREACHABLE
+                if last:
+                    return _UNREACHABLE
+                delay: Optional[float] = _backoff(attempt)
+            else:
+                delay = None if last or not _retryable(response) else _wait(response, attempt)
+                if delay is None:
+                    return response
+            if delay >= deadline - time.monotonic():
+                return _TIMED_OUT
+            await asyncio.sleep(delay)
+            attempt += 1
+
+    async def _check(self, body: Dict[str, Any], timeout: float, key: str) -> Any:
+        response = await self._send("/checks", body, key, timeout)
+        return response if response is _TIMED_OUT or response is _UNREACHABLE else _answer(response)
 
     async def _release_unheard(self, body: Dict[str, Any], key: str) -> None:
         # After a hold's check timed out: ask again with the same key (a
@@ -382,15 +424,7 @@ class AsyncProductMethods:
             await self._settle(f"/reservations/{replay['reservation']['id']}/release", None)
 
     async def _settle(self, path: str, body: Optional[Dict[str, Any]]) -> None:
-        for _ in range(_SETTLE_ATTEMPTS):
-            try:
-                response = await self._http.post(
-                    self._base_url + path, json=body, headers=self._headers, timeout=_SETTLE_TIMEOUT
-                )
-            except httpx.HTTPError:
-                continue
-            if response.status_code < 500:
-                return
+        await self._send(path, body, str(uuid.uuid4()), _SETTLE_TIMEOUT)
 
     @asynccontextmanager
     async def guard(
@@ -455,7 +489,8 @@ class AsyncProductMethods:
         path = f"/reservations/{reservation['id']}"
 
         async def extend(ttl_seconds: Optional[int]) -> None:
-            body = {"ttlSeconds": ttl_seconds} if ttl_seconds else {}
+            # Passed as given: the API refuses a bad one (0, past 3600).
+            body = {} if ttl_seconds is None else {"ttlSeconds": ttl_seconds}
             _raise_for(
                 await self._http.post(
                     self._base_url + path + "/extend", json=body, headers=self._headers, timeout=timeout
@@ -474,18 +509,4 @@ class AsyncProductMethods:
         self, *, subject: Subject, shared: Optional[List[Subject]] = None
     ) -> Dict[str, Any]:
         """Where a subject stands on every limit on it. Not a check: nothing is counted."""
-        params = {"kind": subject["kind"], "id": subject["id"]}
-        if shared:
-            params["shared"] = ",".join(f"{s['kind']}:{s['id']}" for s in shared)
-        response = await self._http.get(
-            self._base_url + "/usage/standing", params=params, headers=self._headers
-        )
-        if response.status_code >= 400:
-            error = (response.json() if response.content else {}).get("error") or {}
-            raise ApiError(
-                response.status_code,
-                error.get("code") or "http_error",
-                error.get("message") or f"HTTP {response.status_code}",
-                error.get("requestId"),
-            )
-        return response.json()
+        return await self._call(_STANDING, {}, _standing_query(subject, shared))
