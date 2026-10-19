@@ -65,6 +65,17 @@ _SETTLE_ATTEMPTS = 3
 _MEMORY = 10_000
 
 
+def _refusal(decision: Dict[str, Any], limit: Optional[str]) -> str:
+    """A refusal in the CLI's words, naming the limit rather than its id."""
+    retry_after = decision.get("retryAfterSeconds")
+    retry = f" Try again in {retry_after} s." if retry_after is not None else ""
+    found = next((r for r in decision.get("remaining") or [] if r.get("limit") == limit), None)
+    if found is None:
+        return f"Refused: limit {limit or '(unknown)'} is used up.{retry}"
+    resets = f", resets {found['resetsAt']}" if found.get("resetsAt") else ""
+    return f"Refused by {found['name']}: {found['remaining']} {found['unit']} left{resets}.{retry}"
+
+
 class LimitExceeded(Exception):
     """Not allowed: a limit is used up — or Limitry is unreachable and a limit fails closed."""
 
@@ -76,7 +87,7 @@ class LimitExceeded(Exception):
         elif reason == "too_many_reservations":
             message = "Too many open reservations for this subject"
         else:
-            message = f"Limit {limit or ''} exceeded".replace("  ", " ")
+            message = _refusal(decision or {}, limit)
         super().__init__(message)
         self.reason: str = reason
         """`limit_exceeded`, `too_many_reservations` or `unavailable`."""

@@ -51,6 +51,33 @@ def test_guard_refuses_before_the_block(sdk):
         "AI replies per day",
         60,
     )
+    # No matching entry in remaining: the id, still saying what happened.
+    assert str(raised.value) == "Refused: limit AI replies per day is used up. Try again in 60 s."
+
+
+def test_refusal_names_the_limit(sdk):
+    refusal = {
+        "allowed": False,
+        "remaining": [
+            {
+                "limit": "lim_a",
+                "name": "AI replies per day",
+                "unit": "replies",
+                "remaining": 0,
+                "resetsAt": "2026-10-20T00:00:00.000Z",
+            }
+        ],
+        "reason": {"code": "limit_exceeded", "limit": "lim_a"},
+        "retryAfterSeconds": 60,
+    }
+    limitry, _ = api(sdk, lambda r: httpx.Response(200, json=refusal))
+    with pytest.raises(sdk.LimitExceeded) as raised:
+        with limitry.guard(subject=USER, action="ai-call"):
+            pass
+    assert str(raised.value) == (
+        "Refused by AI replies per day: 0 replies left, resets 2026-10-20T00:00:00.000Z."
+        " Try again in 60 s."
+    )
 
 
 def test_unreachable_fails_open_then_closed_once_a_closed_limit_was_seen(sdk):
