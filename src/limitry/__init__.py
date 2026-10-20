@@ -7,7 +7,7 @@ from ._resources import AsyncLimitry, Limitry
 from ._runtime import NOT_GIVEN, ApiError, RequestOptions
 from ._webhooks import WebhookEvent, WebhookVerificationError, verify_webhook
 from ._types import *  # noqa: F403
-from .product import LimitExceeded, Held, AsyncHeld, Subject
+from .product import LimitReached, Unavailable, Reservation, AsyncReservation, Subject
 
 __all__ = [
     "Limitry",
@@ -19,8 +19,9 @@ __all__ = [
     "WebhookVerificationError",
     "verify_webhook",
     "__version__",
-    "LimitExceeded",
-    "Held",
-    "AsyncHeld",
+    "LimitReached",
+    "Unavailable",
+    "Reservation",
+    "AsyncReservation",
     "Subject",
 ]

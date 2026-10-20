@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
-__all__ = ["UserMe","ErrorEnvelope","Workspace","AuditEventPage","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalRequest","WorkspaceUsage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookEndpointCreated","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","LimitPage","Limit","LimitSubject","LimitInput","LimitPatch","LimitSyncResult","LimitSyncInput","LimitGrant","LimitGrantInput","CheckDecision","CheckRemaining","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","UsageStanding","UsageBySubject","UsageSeries","Subject","SubjectRef","SubjectUpdate","SubjectResetResult","SubjectReset"]
+__all__ = ["UserMe","ErrorEnvelope","Workspace","AuditEventPage","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalRequest","WorkspaceUsage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookEndpointCreated","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","LimitPage","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatch","LimitSyncResult","LimitSyncInput","LimitSyncEntry","Credit","CreditInput","CheckDecision","CheckLimit","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","UsageStanding","UsageBySubject","UsageSeries","Subject","SubjectRef","SubjectUpdate","SubjectResetResult","SubjectReset"]
 
 
 class UserMe(TypedDict):
@@ -167,14 +167,15 @@ class Limit(TypedDict):
     action: str  # The action it limits; `*` for every action.
     amount: int  # How many units per window — for a `concurrent` limit, how many at once.
     unit: str
-    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]  # `minute`, `hour`, `day`, `week`, `month` or `year`: a period of `every` of them, refilled where `sta
+    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]  # `minute`, `hour`, `day`, `week`, `month` or `year`: a period of `every` of them, reset where `start`
     every: int  # How many `window` units a period lasts: `window: "month", every: 3` is a quarter, `window: "hour", e
-    start: Literal["calendar", "anchor", "first_use"]  # Where a period begins. `calendar`: UTC boundaries (midnight, Monday, the 1st, 1 January). `anchor`: 
+    start: Literal["calendar", "billing_date", "first_use"]  # Where a period begins. `calendar`: UTC boundaries (midnight, Monday, the 1st, 1 January). `billing_d
     rolling: bool  # Counts the last minute, hour or day at the moment of the check instead of the calendar window.
     enabled: bool
-    archivedAt: Optional[str]  # When it was archived (deleting archives it); null while active. An archived limit isn't enforced; it
+    archivedAt: Optional[str]  # When it was archived; null while active. An archived limit isn't enforced; its usage history and cre
     failMode: Literal["open", "closed"]  # What your code should do when Limitry cannot be reached: `open` allows, `closed` denies.
     version: int  # Increases on every change.
+    lastCheckedAt: Optional[str]  # The hour a check last reached this limit, from usage history (up to about a minute behind); null if 
     createdAt: str
     updatedAt: str
 
@@ -185,40 +186,47 @@ class LimitSubject(TypedDict):
 
 
 class _LimitInputRequired(TypedDict):
-    name: str  # A name for the limit, unique among its environment's active limits.
-    subjectKind: str  # Your own label for who is checked.
-    action: str  # The action to limit; `*` for every action.
+    subject: "LimitInputSubject"
     amount: int  # How many units each subject may use per window.
-    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]  # `minute`, `hour`, `day`, `week`, `month` or `year`: a period of `every` of them, refilled where `sta
+    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]  # `minute`, `hour`, `day`, `week`, `month` or `year`: a period of `every` of them, reset where `start`
 
 
 class LimitInput(_LimitInputRequired, total=False):
-    subjectId: Optional[str]  # One subject; omit or null for every subject of the kind. A subject's own limit replaces the kind's l
-    unit: str  # What the amount counts (display only). Default: units.
+    name: str  # A name, unique among the environment's active limits. Default: the sentence the limit reads as, such
+    action: str  # The action to limit. Default: `*`, every action.
+    unit: str  # What the amount counts, in words. Default: units.
     every: int  # How many `window` units a period lasts: `window: "month", every: 3` is a quarter, `window: "hour", e
-    start: Literal["calendar", "anchor", "first_use"]  # Where a period begins. `calendar`: UTC boundaries (midnight, Monday, the 1st, 1 January). `anchor`: 
+    start: Literal["calendar", "billing_date", "first_use"]  # Where a period begins. `calendar`: UTC boundaries (midnight, Monday, the 1st, 1 January). `billing_d
     rolling: bool  # Count the last window instead of the calendar one (minute, hour or day only). Default: false.
     enabled: bool  # Whether checks enforce it. Default: true.
     failMode: Literal["open", "closed"]  # What your code should do when Limitry can't be reached: `open` (allow) or `closed` (deny). Default: 
+
+
+class _LimitInputSubjectRequired(TypedDict):
+    kind: str  # Your own label for who is checked: user, team, apikey …
+
+
+class LimitInputSubject(_LimitInputSubjectRequired, total=False):
+    """Who it applies to: `{"kind": "user"}` for every user, `{"kind": "user", "id": "usr_123"}` for one."""
+    id: Optional[str]  # One subject; omit or null for every subject of the kind. A subject's own limit replaces the kind's l
 
 
 class LimitPatch(TypedDict, total=False):
-    name: str  # A name for the limit, unique among its environment's active limits.
-    subjectKind: str  # Your own label for who is checked.
-    subjectId: Optional[str]  # One subject; omit or null for every subject of the kind. A subject's own limit replaces the kind's l
-    action: str  # The action to limit; `*` for every action.
+    name: str  # A new name, unique among the environment's active limits.
     amount: int  # How many units each subject may use per window.
-    unit: str  # What the amount counts (display only). Default: units.
-    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]  # `minute`, `hour`, `day`, `week`, `month` or `year`: a period of `every` of them, refilled where `sta
-    every: int  # How many `window` units a period lasts: `window: "month", every: 3` is a quarter, `window: "hour", e
-    start: Literal["calendar", "anchor", "first_use"]  # Where a period begins. `calendar`: UTC boundaries (midnight, Monday, the 1st, 1 January). `anchor`: 
-    rolling: bool  # Count the last window instead of the calendar one (minute, hour or day only). Default: false.
-    enabled: bool  # Whether checks enforce it. Default: true.
-    failMode: Literal["open", "closed"]  # What your code should do when Limitry can't be reached: `open` (allow) or `closed` (deny). Default: 
+    enabled: bool  # Whether checks enforce it.
+    failMode: Literal["open", "closed"]  # What your code should do when Limitry can't be reached: `open` (allow) or `closed` (deny).
+    subject: Dict[str, Any]  # Who it applies to. Fixed once the limit is created: to change it, create a new limit and archive thi
+    action: str  # The action. Fixed once the limit is created: to change it, create a new limit and archive this one.
+    unit: str  # What the amount counts. Fixed once the limit is created: to change it, create a new limit and archiv
+    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]  # The window. Fixed once the limit is created: to change it, create a new limit and archive this one.
+    every: int  # How many windows a period lasts. Fixed once the limit is created: to change it, create a new limit a
+    start: Literal["calendar", "billing_date", "first_use"]  # Where a period begins. Fixed once the limit is created: to change it, create a new limit and archive
+    rolling: bool  # Whether it counts the last window. Fixed once the limit is created: to change it, create a new limit
 
 
 class LimitSyncResult(TypedDict):
-    dryRun: bool  # True when nothing was written: this is the plan.
+    preview: bool  # True when nothing was written: this is what a sync would do.
     created: List[str]  # Names of the limits created.
     updated: List[Dict[str, Any]]  # The limits changed, field by field.
     archived: List[str]  # Names of the limits archived (with `archiveMissing`).
@@ -226,15 +234,19 @@ class LimitSyncResult(TypedDict):
 
 
 class _LimitSyncInputRequired(TypedDict):
-    limits: List["LimitInput"]  # Every limit you want, each described whole: an omitted field is its default, as on create. Names are
+    limits: List["LimitSyncEntry"]  # Every limit you want, each described whole: an omitted field is its default, as on create. Names are
 
 
 class LimitSyncInput(_LimitSyncInputRequired, total=False):
     archiveMissing: bool  # Archive the environment's active limits whose names aren't in `limits` (restorable). Default: false,
-    dryRun: bool  # Answer what the sync would do and change nothing. Default: false.
+    preview: bool  # Answer what the sync would do and change nothing. Default: false.
 
 
-class LimitGrant(TypedDict):
+class LimitSyncEntry(TypedDict):
+    pass
+
+
+class Credit(TypedDict):
     id: str
     limitId: str
     subject: Dict[str, Any]
@@ -244,29 +256,29 @@ class LimitGrant(TypedDict):
     createdAt: str
 
 
-class _LimitGrantInputRequired(TypedDict):
+class _CreditInputRequired(TypedDict):
     subject: Dict[str, Any]  # Who gets the credits, as `{"kind": "team", "id": "team_42"}`.
     amount: int  # Credits to add; negative to take them back. Not 0.
 
 
-class LimitGrantInput(_LimitGrantInputRequired, total=False):
+class CreditInput(_CreditInputRequired, total=False):
     note: str  # Required when `amount` is negative.
 
 
 class _CheckDecisionRequired(TypedDict):
     id: str
     allowed: bool  # The answer. `false` is a normal answer, not an error — branch on it.
-    reason: Optional[Dict[str, Any]]  # Why not, when `allowed` is false: a limit is used up (`limit` names it), or the subject already hold
-    remaining: List["CheckRemaining"]  # Every limit that applied, and what is left in its window.
+    reason: Optional[Dict[str, Any]]  # Why it was refused, when `allowed` is false: `limit_reached` — a limit is used up (`limitId` names i
+    limits: List["CheckLimit"]  # Every limit that applied, and what is left on each (`limits[0].remaining`).
     retryAfterSeconds: Optional[int]  # When `allowed` is false: seconds until it could be allowed.
 
 
 class CheckDecision(_CheckDecisionRequired, total=False):
-    reservation: Dict[str, Any]  # With `mode: reserve`, when allowed: the hold — commit or release it before `expiresAt`, or it releas
+    reservation: Dict[str, Any]  # With `mode: reserve`, when allowed: the reservation — commit or release it before `expiresAt`, or it
 
 
-class CheckRemaining(TypedDict):
-    limit: str
+class CheckLimit(TypedDict):
+    limitId: str
     name: str
     unit: str
     window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]
@@ -284,8 +296,8 @@ class _CheckRequestRequired(TypedDict):
 class CheckRequest(_CheckRequestRequired, total=False):
     shared: List[Dict[str, Any]]  # Shared subjects it also draws from — a team's, org's or project's pool (at most 4). Every limit on e
     cost: int  # Units it would use. Default 1.
-    mode: Literal["consume", "preview", "reserve"]  # `consume` (default) decides and uses; `preview` decides without using; `reserve` decides and HOLDS `
-    ttlSeconds: int  # With `reserve`: how long the hold lasts before it releases itself. Default 300, at most 3600.
+    mode: Literal["consume", "preview", "reserve"]  # `consume` (default) decides and uses; `preview` decides without using; `reserve` decides and reserve
+    ttlSeconds: int  # With `reserve`: how long the reservation lasts before it releases itself. Default 300, at most 3600.
 
 
 class CheckSubject(TypedDict):
@@ -296,8 +308,8 @@ class CheckSubject(TypedDict):
 
 class Reservation(TypedDict):
     id: str
-    status: Literal["held", "committed", "released", "expired"]  # `expired`: nobody settled it in time, so it gave its hold back.
-    reserved: int  # The amount held.
+    status: Literal["held", "committed", "released", "expired"]  # `expired`: nobody committed or released it in time, so it released itself.
+    reserved: int  # The amount reserved.
     cost: int  # What it finally used: the committed cost; 0 when released.
     expiresAt: str
 
@@ -330,7 +342,7 @@ class UsageSeries(TypedDict):
 
 class Subject(TypedDict):
     subject: "SubjectRef"
-    anchor: Optional[str]  # When its `anchor` limits' periods start from: its billing date, else its first counted check. Null u
+    billingDate: Optional[str]  # When its `billing_date` limits' periods start from: the billing date you set, else its first counted
 
 
 class SubjectRef(TypedDict):
@@ -339,12 +351,12 @@ class SubjectRef(TypedDict):
 
 
 class SubjectUpdate(TypedDict):
-    anchor: str  # The date and time its periods start from (ISO 8601), such as a subscription's start.
+    billingDate: str  # The date and time its periods start from (ISO 8601), such as a subscription's start.
 
 
 class SubjectResetResult(TypedDict):
     subject: "SubjectRef"
-    reset: List[str]  # The limits that were refilled.
+    reset: List[str]  # The limits that were reset.
 
 
 class SubjectReset(TypedDict, total=False):

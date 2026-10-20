@@ -8,28 +8,29 @@
 #         response = handle(request)
 #
 #     # Cost known afterwards (an AI reply's cents), or "at most N at
-#     # once": hold an estimate, do the work, commit what it used —
-#     # released on an error.
-#     with limitry.hold(subject={"kind": "user", "id": user.id}, action="ai-call", estimate=5) as held:
+#     # once": reserve what it will probably cost, do the work, commit
+#     # what it used — released on an error.
+#     with limitry.reserve(subject={"kind": "user", "id": user.id}, action="ai-call", cost=5) as reservation:
 #         answer = call_model(prompt)
-#         held.cost(price_cents(answer.usage))
+#         reservation.cost(price_cents(answer.usage))
 #
-# A refusal raises `LimitExceeded` (with `retry_after_seconds`). When
-# Limitry can't be reached (an error, a 5xx, or no answer within
-# `timeout`) — or the workspace is past its plan's allowance (402) — each
-# limit's fail mode decides, as in the TypeScript SDK: the last decision's
-# fail mode for this subject and action is remembered, and `closed`
-# refuses (reason `unavailable`) while `open`, the default, runs the
-# block unmetered.
+# A refusal raises `LimitReached` (with `limit_id` and
+# `retry_after_seconds`). When Limitry can't be reached — an error, a
+# 5xx, no answer within `timeout`, the workspace past its plan's
+# allowance (402) or the edge's flood guard (429) — each limit's fail
+# mode decides, as in the TypeScript SDK: the last decision's fail mode
+# for this subject and action is remembered, and `closed` raises
+# `Unavailable` while `open`, the default, runs the block unmetered.
 #
 # Retries are safe, and follow the TypeScript SDK's rule exactly: each
-# guard or hold sends one Idempotency-Key, and a check is retried with it
-# (a network error, 408, 429, 5xx; at most twice, the client's backoff)
-# all within ONE time budget, `timeout` (1.5 s) — so it counts once and
-# never waits longer than that. A hold whose check timed out may have been
-# granted all the same: once the block is done, `hold` sends the check
-# again with the same key (a replay, nothing counted twice) and releases
-# the hold it finds. Commits and releases retry the same way within 5 s.
+# guard or reserve sends one Idempotency-Key, and a check is retried with
+# it (a network error, 408, 429, 5xx; at most twice, the client's
+# backoff) all within ONE time budget, `timeout` (1.5 s) — so it counts
+# once and never waits longer than that. A reservation whose check timed
+# out may have been made all the same: once the block is done, `reserve`
+# sends the check again with the same key (a replay, nothing counted
+# twice) and releases the reservation it finds. Commits and releases
+# retry the same way within 5 s.
 
 from __future__ import annotations
 
@@ -70,7 +71,7 @@ FailMode = Literal["open", "closed"]
 _UNREACHABLE: Any = object()
 # No answer in time: unlike an error, the check may have been decided.
 _TIMED_OUT: Any = object()
-# How long a settle (or a replay to find a hold) may take, retries included.
+# How long a commit or release (or a replay to find a reservation) may take, retries included.
 _SETTLE_TIMEOUT = 5.0
 _MEMORY = 10_000
 # The largest cost a commit takes.
@@ -78,41 +79,45 @@ _MAX_COST = 1_000_000_000
 _STANDING: Operation = {
     "method": "GET",
     "path": "/usage/standing",
-    "query": ["kind", "id", "shared"],
+    "query": ["subject", "shared"],
     "body": False,
     "names": {},
 }
 
 
-class LimitExceeded(Exception):
-    """Not allowed: a limit is used up — or Limitry is unreachable and a limit fails closed."""
+class LimitReached(Exception):
+    """Refused: a limit is reached, or the subject holds too many open reservations."""
 
-    def __init__(self, decision: Optional[Dict[str, Any]]) -> None:
-        reason = ((decision or {}).get("reason") or {}).get("code") or "unavailable"
-        limit = ((decision or {}).get("reason") or {}).get("limit")
-        if reason == "unavailable":
-            message = "Limitry could not be reached and a limit denies when unreachable"
-        else:
-            # The API's own sentence (reason.message), one wording everywhere.
-            message = ((decision or {}).get("reason") or {}).get("message") or "Refused"
-        super().__init__(message)
-        self.reason: str = reason
-        """`limit_exceeded`, `too_many_reservations` or `unavailable`."""
-        self.limit: Optional[str] = limit
-        """The limit that refused; None when unavailable or too many holds."""
-        self.retry_after_seconds: Optional[int] = (decision or {}).get("retryAfterSeconds")
-        self.decision: Optional[Dict[str, Any]] = decision
+    def __init__(self, decision: Dict[str, Any]) -> None:
+        reason = decision.get("reason") or {}
+        # The API's own sentence (reason.message), one wording everywhere.
+        super().__init__(reason.get("message") or "Refused")
+        self.reason: str = reason.get("code") or "limit_reached"
+        """`limit_reached` or `too_many_reservations`."""
+        self.limit_id: Optional[str] = reason.get("limitId")
+        """The limit that refused; None for too many open reservations."""
+        self.retry_after_seconds: Optional[int] = decision.get("retryAfterSeconds")
+        self.decision: Dict[str, Any] = decision
 
 
-class Held:
-    """A hold in progress: report what the work used, keep it for longer work."""
+class Unavailable(Exception):
+    """Limitry could not be reached (an error, a 5xx, a timeout, the plan's
+    allowance used up, or the flood guard's 429) and a limit on this subject
+    and action fails closed. With `open`, the block runs instead."""
 
-    def __init__(self, estimate: float, extend: Any = None) -> None:
-        self.used = estimate
+    def __init__(self) -> None:
+        super().__init__("Limitry could not be reached and a limit refuses when unreachable")
+
+
+class Reservation:
+    """A reservation in progress: report what the work used, keep it for longer work."""
+
+    def __init__(self, reserved: float, extend: Any = None) -> None:
+        self.used = reserved
         self._extend = extend
 
     def cost(self, units: float) -> None:
-        """The cost actually used — committed when the block ends. Default: the estimate.
+        """The cost actually used — committed when the block ends. Default: the reserved cost.
 
         A whole number from 0 to 1,000,000,000, as the API commits: anything
         else raises ValueError here, in your code, rather than a commit the
@@ -124,22 +129,23 @@ class Held:
             or not 0 <= units <= _MAX_COST
         ):
             raise ValueError(
-                f"held.cost({units!r}): the cost must be a whole number from 0 to {_MAX_COST}"
+                f"reservation.cost({units!r}): the cost must be a whole number from 0 to {_MAX_COST}"
             )
         self.used = int(units)
 
     def extend(self, ttl_seconds: Optional[int] = None) -> None:
-        """Keep the hold for longer work: it expires `ttl_seconds` from now (default
-        300, 1 to 3600). Raises the API's error, such as for an expired hold."""
+        """Keep the reservation for longer work: it expires `ttl_seconds` from now
+        (default 300, 1 to 3600). Raises the API's error, such as for an expired
+        reservation."""
         if self._extend:
             self._extend(ttl_seconds)
 
 
-class AsyncHeld(Held):
-    """A hold in progress, in `async with limitry.hold(...)`."""
+class AsyncReservation(Reservation):
+    """A reservation in progress, in `async with limitry.reserve(...)`."""
 
     async def extend(self, ttl_seconds: Optional[int] = None) -> None:  # type: ignore[override]
-        """Keep the hold for longer work: it expires `ttl_seconds` from now (default 300)."""
+        """Keep the reservation for longer work: it expires `ttl_seconds` from now (default 300)."""
         if self._extend:
             await self._extend(ttl_seconds)
 
@@ -163,7 +169,7 @@ def _check_body(
 
 
 def _raise_for(response: httpx.Response) -> None:
-    """An extend that failed is the caller's to know (the hold may have expired)."""
+    """An extend that failed is the caller's to know (the reservation may have expired)."""
     if response.status_code >= 400:
         try:
             error = response.json().get("error") or {}
@@ -178,10 +184,11 @@ def _raise_for(response: httpx.Response) -> None:
 
 
 def _answer(response: httpx.Response) -> Any:
-    """The decision, or _UNREACHABLE; a 4xx other than 402 is the caller's mistake."""
+    """The decision, or _UNREACHABLE (5xx, 402 past the plan, 429 the flood
+    guard); any other 4xx is the caller's mistake."""
     if response.status_code < 300:
         return response.json()
-    if response.status_code == 402 or response.status_code >= 500:
+    if response.status_code in (402, 429) or response.status_code >= 500:
         return _UNREACHABLE
     try:
         error = response.json().get("error") or {}
@@ -196,7 +203,7 @@ def _answer(response: httpx.Response) -> Any:
 
 
 def _standing_query(subject: Subject, shared: Optional[List[Subject]]) -> Dict[str, Any]:
-    query: Dict[str, Any] = {"kind": subject["kind"], "id": subject["id"]}
+    query: Dict[str, Any] = {"subject": f"{subject['kind']}:{subject['id']}"}
     if shared:
         query["shared"] = ",".join(f"{s['kind']}:{s['id']}" for s in shared)
     return query
@@ -212,14 +219,14 @@ class _Memory:
         return forced or self._seen.get((subject["kind"], subject["id"], action), "open")
 
     def remember(self, subject: Subject, action: str, decision: Dict[str, Any]) -> None:
-        closed = any(r.get("failMode") == "closed" for r in decision.get("remaining") or [])
+        closed = any(r.get("failMode") == "closed" for r in decision.get("limits") or [])
         self._seen[(subject["kind"], subject["id"], action)] = "closed" if closed else "open"
         if len(self._seen) > _MEMORY:
             self._seen.popitem(last=False)
 
 
 class ProductMethods:
-    """`limitry.guard(...)`, `limitry.hold(...)` and `limitry.standing(...)`."""
+    """`limitry.guard(...)`, `limitry.reserve(...)` and `limitry.standing(...)`."""
 
     _http: httpx.Client
     _base_url: str
@@ -268,15 +275,16 @@ class ProductMethods:
         return response if response is _TIMED_OUT or response is _UNREACHABLE else _answer(response)
 
     def _release_unheard(self, body: Dict[str, Any], key: str) -> None:
-        # After a hold's check timed out: ask again with the same key (a
-        # replay if Limitry decided it) and release any hold it granted.
+        # After a reservation's check timed out: ask again with the same key
+        # (a replay if Limitry decided it) and release any reservation it made.
         replay = self._check(body, _SETTLE_TIMEOUT, key)
         if isinstance(replay, dict) and replay.get("reservation"):
             self._settle(f"/reservations/{replay['reservation']['id']}/release", None)
 
     def _settle(self, path: str, body: Optional[Dict[str, Any]]) -> None:
-        # Settling never fails the caller's work: it is retried (the same
-        # settle answers the same), and a lost one expires by itself.
+        # Committing or releasing never fails the caller's work: it is
+        # retried (the same commit answers the same), and a lost one expires
+        # by itself.
         self._send(path, body, str(uuid.uuid4()), _SETTLE_TIMEOUT)
 
     @contextmanager
@@ -290,39 +298,39 @@ class ProductMethods:
         timeout: float = 1.5,
         fail_mode: Optional[FailMode] = None,
     ) -> Iterator[None]:
-        """Checks `cost`, and runs the block only if allowed (else raises `LimitExceeded`)."""
+        """Checks `cost`, and runs the block only if allowed (else raises `LimitReached`)."""
         memory = self._limits_memory()
         decision = self._check(
             _check_body(subject, action, cost, shared), timeout, str(uuid.uuid4())
         )
         if decision is _UNREACHABLE or decision is _TIMED_OUT:
             if memory.mode(subject, action, fail_mode) == "closed":
-                raise LimitExceeded(None)
+                raise Unavailable()
         else:
             if not fail_mode:
                 memory.remember(subject, action, decision)
             if not decision.get("allowed"):
-                raise LimitExceeded(decision)
+                raise LimitReached(decision)
         yield
 
     @contextmanager
-    def hold(
+    def reserve(
         self,
         *,
         subject: Subject,
         action: str,
-        estimate: float = 1,
+        cost: float = 1,
         shared: Optional[List[Subject]] = None,
         ttl_seconds: Optional[int] = None,
         timeout: float = 1.5,
         fail_mode: Optional[FailMode] = None,
-    ) -> Iterator[Held]:
-        """Holds `estimate`, runs the block, then commits the cost it reported
-        (`held.cost(n)`, default the estimate) — or releases the hold if the
-        block raises. A concurrent limit's slot is held exactly as long as the
-        block runs."""
+    ) -> Iterator[Reservation]:
+        """Reserves `cost`, runs the block, then commits the cost it reported
+        (`reservation.cost(n)`, default the reserved cost) — or releases the
+        reservation if the block raises. A concurrent limit's slot is taken
+        exactly as long as the block runs."""
         memory = self._limits_memory()
-        body = _check_body(subject, action, estimate, shared, True, ttl_seconds)
+        body = _check_body(subject, action, cost, shared, True, ttl_seconds)
         key = str(uuid.uuid4())
         decision = self._check(body, timeout, key)
         if decision is _UNREACHABLE or decision is _TIMED_OUT:
@@ -330,9 +338,9 @@ class ProductMethods:
             if memory.mode(subject, action, fail_mode) == "closed":
                 if timed_out:
                     self._release_unheard(body, key)
-                raise LimitExceeded(None)
+                raise Unavailable()
             try:
-                yield Held(estimate)
+                yield Reservation(cost)
             finally:
                 if timed_out:
                     self._release_unheard(body, key)
@@ -341,7 +349,7 @@ class ProductMethods:
             memory.remember(subject, action, decision)
         reservation = decision.get("reservation")
         if not decision.get("allowed") or not reservation:
-            raise LimitExceeded(decision)
+            raise LimitReached(decision)
         path = f"/reservations/{reservation['id']}"
 
         def extend(ttl_seconds: Optional[int]) -> None:
@@ -353,13 +361,13 @@ class ProductMethods:
                 )
             )
 
-        held = Held(estimate, extend)
+        reserved = Reservation(cost, extend)
         try:
-            yield held
+            yield reserved
         except BaseException:
             self._settle(path + "/release", None)
             raise
-        self._settle(path + "/commit", {"cost": held.used})
+        self._settle(path + "/commit", {"cost": reserved.used})
 
     def standing(self, *, subject: Subject, shared: Optional[List[Subject]] = None) -> Dict[str, Any]:
         """Where a subject stands on every limit on it: used, remaining,
@@ -417,8 +425,8 @@ class AsyncProductMethods:
         return response if response is _TIMED_OUT or response is _UNREACHABLE else _answer(response)
 
     async def _release_unheard(self, body: Dict[str, Any], key: str) -> None:
-        # After a hold's check timed out: ask again with the same key (a
-        # replay if Limitry decided it) and release any hold it granted.
+        # After a reservation's check timed out: ask again with the same key
+        # (a replay if Limitry decided it) and release any reservation it made.
         replay = await self._check(body, _SETTLE_TIMEOUT, key)
         if isinstance(replay, dict) and replay.get("reservation"):
             await self._settle(f"/reservations/{replay['reservation']['id']}/release", None)
@@ -437,36 +445,36 @@ class AsyncProductMethods:
         timeout: float = 1.5,
         fail_mode: Optional[FailMode] = None,
     ) -> AsyncIterator[None]:
-        """Checks `cost`, and runs the block only if allowed (else raises `LimitExceeded`)."""
+        """Checks `cost`, and runs the block only if allowed (else raises `LimitReached`)."""
         memory = self._limits_memory()
         decision = await self._check(
             _check_body(subject, action, cost, shared), timeout, str(uuid.uuid4())
         )
         if decision is _UNREACHABLE or decision is _TIMED_OUT:
             if memory.mode(subject, action, fail_mode) == "closed":
-                raise LimitExceeded(None)
+                raise Unavailable()
         else:
             if not fail_mode:
                 memory.remember(subject, action, decision)
             if not decision.get("allowed"):
-                raise LimitExceeded(decision)
+                raise LimitReached(decision)
         yield
 
     @asynccontextmanager
-    async def hold(
+    async def reserve(
         self,
         *,
         subject: Subject,
         action: str,
-        estimate: float = 1,
+        cost: float = 1,
         shared: Optional[List[Subject]] = None,
         ttl_seconds: Optional[int] = None,
         timeout: float = 1.5,
         fail_mode: Optional[FailMode] = None,
-    ) -> AsyncIterator[AsyncHeld]:
-        """Holds `estimate`, runs the block, then commits what it used — or releases on an error."""
+    ) -> AsyncIterator[AsyncReservation]:
+        """Reserves `cost`, runs the block, then commits what it used — or releases on an error."""
         memory = self._limits_memory()
-        body = _check_body(subject, action, estimate, shared, True, ttl_seconds)
+        body = _check_body(subject, action, cost, shared, True, ttl_seconds)
         key = str(uuid.uuid4())
         decision = await self._check(body, timeout, key)
         if decision is _UNREACHABLE or decision is _TIMED_OUT:
@@ -474,9 +482,9 @@ class AsyncProductMethods:
             if memory.mode(subject, action, fail_mode) == "closed":
                 if timed_out:
                     await self._release_unheard(body, key)
-                raise LimitExceeded(None)
+                raise Unavailable()
             try:
-                yield AsyncHeld(estimate)
+                yield AsyncReservation(cost)
             finally:
                 if timed_out:
                     await self._release_unheard(body, key)
@@ -485,7 +493,7 @@ class AsyncProductMethods:
             memory.remember(subject, action, decision)
         reservation = decision.get("reservation")
         if not decision.get("allowed") or not reservation:
-            raise LimitExceeded(decision)
+            raise LimitReached(decision)
         path = f"/reservations/{reservation['id']}"
 
         async def extend(ttl_seconds: Optional[int]) -> None:
@@ -497,13 +505,13 @@ class AsyncProductMethods:
                 )
             )
 
-        held = AsyncHeld(estimate, extend)
+        reserved = AsyncReservation(cost, extend)
         try:
-            yield held
+            yield reserved
         except BaseException:
             await self._settle(path + "/release", None)
             raise
-        await self._settle(path + "/commit", {"cost": held.used})
+        await self._settle(path + "/commit", {"cost": reserved.used})
 
     async def standing(
         self, *, subject: Subject, shared: Optional[List[Subject]] = None

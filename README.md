@@ -1,6 +1,6 @@
 # limitry
 
-The Limitry Python SDK puts a limit around costly work in a `with` block: `guard` checks before the block runs, and `hold` reserves an estimate, then charges what the work actually cost. Every API operation is a typed method too, sync or async.
+The Limitry Python SDK puts a limit around costly work in a `with` block: `guard` checks before the block runs, and `reserve` reserves what the work will probably cost, then charges what it actually cost. Every API operation is a typed method too, sync or async.
 
 Limitry is the limits, credits and budgets layer for your software: give each of your users, teams, tenants, API keys or agents an allowance, and before any costly action one call tells your code whether it may happen.
 
@@ -19,37 +19,39 @@ keys** in the app. Use a test key (`lim_test_…`) while you build.
 Here it counts one AI call against a limit such as 100 a day:
 
 ```python
-from limitry import LimitExceeded, Limitry
+from limitry import LimitReached, Limitry
 
 limitry = Limitry()  # reads LIMITRY_API_KEY
 
 try:
     with limitry.guard(subject={"kind": "user", "id": "usr_123"}, action="ai-call"):
         reply = call_model(prompt)
-except LimitExceeded as error:
+except LimitReached as error:
     print(f"Try again in {error.retry_after_seconds} seconds")
 ```
 
 ## Charge what it actually cost
 
 When you only know the cost afterwards, such as an AI reply priced by
-the token, `hold` reserves an estimate (5 cents here), runs the block
-and charges what it used. If the block raises, the hold is released:
+the token, `reserve` reserves what it will probably cost (5 cents here),
+runs the block and charges what it used. If the block raises, the
+reservation is released:
 
 ```python
 from limitry import Limitry
 
 limitry = Limitry()
 
-with limitry.hold(
-    subject={"kind": "user", "id": "usr_123"}, action="ai-call", estimate=5
-) as held:
+with limitry.reserve(
+    subject={"kind": "user", "id": "usr_123"}, action="ai-call", cost=5
+) as reservation:
     response = call_model(prompt)
-    held.cost(price_cents(response.usage))  # your prices, in cents
+    reservation.cost(price_cents(response.usage))  # your prices, in cents
 ```
 
-If Limitry can't be reached, each limit's fail mode decides: `open` lets
-the work run, `closed` refuses it.
+A refusal raises `LimitReached`. If Limitry can't be reached, each
+limit's fail mode decides: `open` lets the work run, `closed` raises
+`Unavailable`.
 
 ## Everything else
 
@@ -62,9 +64,9 @@ from limitry import Limitry
 
 limitry = Limitry()
 
+# "100 units per user per day for ai-call"
 limitry.limits.create(
-    name="AI replies per day",
-    subject_kind="user",
+    subject={"kind": "user"},
     action="ai-call",
     amount=100,
     window="day",

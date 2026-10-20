@@ -18,7 +18,7 @@ class _Checks:
     def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CheckDecision":
         """Check whether a subject may act
 
-        Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies, and — in `consume` mode — uses it. Always 200 for a decision: read `allowed`; `remaining` shows what is left per limit and `retryAfterSeconds` when to try again. An `Idempotency-Key` header makes a retried check return the same decision without using twice. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies, and — in `consume` mode — uses it. Always 200 for a decision, allowed or refused: read `allowed`; `limits` shows what is left on each limit and `retryAfterSeconds` when to try again. An `Idempotency-Key` header makes a retried check return the same decision without using twice. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return self._client._call(
             {"method": "post", "path": "/checks", "query": [], "body": True, "names": {"subject": "subject", "shared": "shared", "action": "action", "cost": "cost", "mode": "mode", "ttl_seconds": "ttlSeconds"}},
             {},
@@ -27,27 +27,27 @@ class _Checks:
         )
 
 
-class _LimitsGrants:
+class _LimitsCredits:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitGrant":
+    def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Credit":
         """Add credits to a balance
 
-        Adds `amount` to one subject's balance — a limit whose window is `total`. A negative `amount` takes credits back (a refund, a chargeback) and needs a `note` saying why; the balance may go below zero, and checks are refused until it is topped up. Owners and admins, or a workspace API key; an agent asks a person (the `limit.grant` approval)."""
+        Adds `amount` credits to one subject's balance — a limit whose window is `total`. A negative `amount` takes credits back (a refund, a chargeback) and needs a `note` saying why; the balance may go below zero, and checks are refused until more credits are added. Owners and admins, or a workspace API key; an agent asks a person (the `limit.credit` approval)."""
         return self._client._call(
-            {"method": "post", "path": "/limits/{limitId}/grants", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
+            {"method": "post", "path": "/limits/{limitId}/credits", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
             {"limitId": limit_id},
             {"subject": subject, "amount": amount, "note": note},
             request_options,
         )
 
     def list(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
-        """List a balance's grants
+        """List a balance's credits
 
-        Credits added to subjects' balances for this limit, newest first."""
+        Credits added to (or taken back from) subjects' balances for this limit, newest first."""
         return self._client._call(
-            {"method": "get", "path": "/limits/{limitId}/grants", "query": [], "body": False, "names": {}},
+            {"method": "get", "path": "/limits/{limitId}/credits", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
             request_options,
@@ -57,12 +57,12 @@ class _LimitsGrants:
 class _Limits:
     def __init__(self, client: "Client") -> None:
         self._client = client
-        self.grants = _LimitsGrants(client)
+        self.credits = _LimitsCredits(client)
 
     def archive(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> None:
         """Archive a limit
 
-        Stops a limit: checks stop enforcing it within a minute, and it leaves the list. It is archived, not erased — its usage history and credit grants stay, and `POST /v1/limits/{limitId}/restore` brings it back. Owners and admins only, for a person's token."""
+        Stops a limit: checks stop enforcing it at once, and it leaves the list. It is archived, not erased — its usage history and credits stay, and `POST /v1/limits/{limitId}/restore` brings it back. Owners and admins only, for a person's token."""
         return self._client._call(
             {"method": "post", "path": "/limits/{limitId}/archive", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
@@ -70,14 +70,14 @@ class _Limits:
             request_options,
         )
 
-    def create(self, *, name: str, subject_kind: str, action: str, amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], subject_id: Optional[str] = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "anchor", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    def create(self, *, subject: Dict[str, Any], amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], name: str = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
         """Create a limit
 
-        Limits how much of an action a subject may use per window — for example 200 cents of `ai-call` a month for every `user`. Checks enforce it from then on. Names are unique among the environment's active limits. Owners and admins only, for a person's token."""
+        Limits how much a subject may use per window — for example 200 cents a month for every `user`. Only `subject.kind`, `amount` and `window` are needed: `action` defaults to every action (`*`), `unit` to units, and `name` to the sentence the limit reads as. Checks enforce it from then on. What it counts (subject, action, unit, window, every, start, rolling) is fixed once created. Owners and admins only, for a person's token."""
         return self._client._call(
-            {"method": "post", "path": "/limits", "query": [], "body": True, "names": {"name": "name", "subject_kind": "subjectKind", "subject_id": "subjectId", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
+            {"method": "post", "path": "/limits", "query": [], "body": True, "names": {"name": "name", "subject": "subject", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
             {},
-            {"name": name, "subject_kind": subject_kind, "subject_id": subject_id, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
+            {"name": name, "subject": subject, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
             request_options,
         )
 
@@ -114,25 +114,25 @@ class _Limits:
             request_options,
         )
 
-    def sync(self, *, limits: List[Dict[str, Any]], archive_missing: bool = NOT_GIVEN, dry_run: bool = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitSyncResult":
+    def sync(self, *, limits: List[Any], archive_missing: bool = NOT_GIVEN, preview: bool = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitSyncResult":
         """Sync limits from a list
 
-        Makes the environment's limits match `limits`, by name: creates the missing, changes those that differ (an omitted field means its default) and, with `archiveMissing`, archives active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list first, and a problem anywhere changes nothing (400, each problem in `details`); then it writes every change at once. `dryRun` answers the plan without writing. For keeping limits in a file in your repository (`limitry sync`). Owners and admins only, for a person's token."""
+        Makes the environment's limits match `limits`, by name: creates the missing, changes those that differ (an omitted field means its default) and, with `archiveMissing`, archives active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list first, and a problem anywhere changes nothing (400, each problem in `details`); then it writes every change at once. What a limit counts is fixed: a different subject, action, unit or window under an existing name is refused until the entry is renamed. `preview` answers what it would do without writing. For keeping limits in a file in your repository (`limitry sync`). Owners and admins only, for a person's token."""
         return self._client._call(
-            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "dry_run": "dryRun"}},
+            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "preview": "preview"}},
             {},
-            {"limits": limits, "archive_missing": archive_missing, "dry_run": dry_run},
+            {"limits": limits, "archive_missing": archive_missing, "preview": preview},
             request_options,
         )
 
-    def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, subject_kind: str = NOT_GIVEN, subject_id: Optional[str] = NOT_GIVEN, action: str = NOT_GIVEN, amount: int = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "anchor", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, amount: int = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, subject: Dict[str, Any] = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
         """Change a limit
 
-        Changes any of a limit's fields; checks use the new rule within a minute. Owners and admins only, for a person's token."""
+        Changes a limit's name, amount, fail mode or whether it is enabled; checks use the new rule at once. What a limit counts (subject, action, unit, window, every, start, rolling) is fixed: a different value is refused (400) — create a new limit and archive this one. Owners and admins only, for a person's token."""
         return self._client._call(
-            {"method": "patch", "path": "/limits/{limitId}", "query": [], "body": True, "names": {"name": "name", "subject_kind": "subjectKind", "subject_id": "subjectId", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
+            {"method": "patch", "path": "/limits/{limitId}", "query": [], "body": True, "names": {"name": "name", "amount": "amount", "enabled": "enabled", "fail_mode": "failMode", "subject": "subject", "action": "action", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling"}},
             {"limitId": limit_id},
-            {"name": name, "subject_kind": subject_kind, "subject_id": subject_id, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
+            {"name": name, "amount": amount, "enabled": enabled, "fail_mode": fail_mode, "subject": subject, "action": action, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling},
             request_options,
         )
 
@@ -144,7 +144,7 @@ class _Reservations:
     def commit(self, reservation_id: Union[str, int], *, cost: int, request_options: Optional[RequestOptions] = None) -> "Reservation":
         """Commit a reservation
 
-        Settles a hold with the ACTUAL amount used (`cost`): less than held gives the rest back at once; more is charged in full — the work happened. A commit after the hold expired still charges `cost`. Repeating a commit answers the same. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Commits a reservation with the ACTUAL amount used (`cost`): less than reserved gives the rest back at once; more is charged in full — the work happened. A commit after the reservation expired still charges `cost`. Repeating a commit answers the same. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/commit", "query": [], "body": True, "names": {"cost": "cost"}},
             {"reservationId": reservation_id},
@@ -155,7 +155,7 @@ class _Reservations:
     def extend(self, reservation_id: Union[str, int], *, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Reservation":
         """Extend a reservation
 
-        Keeps a hold for longer work: it now expires `ttlSeconds` from now (default 300, at most 3600) — call it again as a heartbeat. Only a held reservation can be extended. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Keeps a reservation for longer work: it now expires `ttlSeconds` from now (default 300, at most 3600) — call it again as a heartbeat. Only an open reservation can be extended. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/extend", "query": [], "body": True, "names": {"ttl_seconds": "ttlSeconds"}},
             {"reservationId": reservation_id},
@@ -166,7 +166,7 @@ class _Reservations:
     def release(self, reservation_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Reservation":
         """Release a reservation
 
-        Gives the whole hold back — the work did not happen. Repeating a release answers the same; releasing a committed reservation is refused. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Gives the whole reservation back — the work did not happen. Repeating a release answers the same; releasing a committed reservation is refused. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/release", "query": [], "body": False, "names": {}},
             {"reservationId": reservation_id},
@@ -182,7 +182,7 @@ class _Subjects:
     def get(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Subject":
         """Get a subject
 
-        A subject's anchor: when its `anchor` limits' periods start from. A subject is yours (a user, a team, an agent) and exists once a check names it."""
+        A subject's billing date: when its `billing_date` limits' periods start from. A subject is yours (a user, a team, an agent) and exists once a check names it."""
         return self._client._call(
             {"method": "get", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": False, "names": {}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
@@ -193,7 +193,7 @@ class _Subjects:
     def reset(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, limit_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectResetResult":
         """Reset a subject's limits
 
-        Refills one limit on a subject (`limitId`), or every limit on it (`{}`), at once: for goodwill, a promotion or support. The schedule doesn't move: the next refill is still the usual one. A balance goes back to its amount; a concurrent limit is skipped. Send an Idempotency-Key and a repeat resets once. Owners and admins only, for a person's token."""
+        Resets one limit on a subject (`limitId`), or every limit on it (`{}`), at once: for goodwill, a promotion or support. The schedule doesn't move: the next reset is still the usual one. A balance goes back to its amount; a concurrent limit is skipped. Send an Idempotency-Key and a repeat resets once. Owners and admins only, for a person's token."""
         return self._client._call(
             {"method": "post", "path": "/subjects/{subjectKind}/{subjectId}/reset", "query": [], "body": True, "names": {"limit_id": "limitId"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
@@ -201,14 +201,14 @@ class _Subjects:
             request_options,
         )
 
-    def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, anchor: str, request_options: Optional[RequestOptions] = None) -> "Subject":
-        """Set a subject's anchor
+    def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, billing_date: str, request_options: Optional[RequestOptions] = None) -> "Subject":
+        """Set a subject's billing date
 
-        Sets when a subject's `anchor` limits' periods start from: typically its subscription's start date, from your billing system's webhook, so its allowance refills on its own billing day (monthly for an annual plan, too). Owners and admins only, for a person's token."""
+        Sets when a subject's `billing_date` limits' periods start from: typically its subscription's start date, from your billing system's webhook, so its allowance resets on its own billing day (monthly for an annual plan, too). Owners and admins only, for a person's token."""
         return self._client._call(
-            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"anchor": "anchor"}},
+            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"billing_date": "billingDate"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
-            {"anchor": anchor},
+            {"billing_date": billing_date},
             request_options,
         )
 
@@ -217,32 +217,32 @@ class _Usage:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def query(self, *, limit_id: str, subject_kind: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageSeries":
+    def query(self, *, limit_id: str, subject: str = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageSeries":
         """Get a limit's usage over time
 
-        Units used, checks allowed and denied for one limit — across all subjects, or one (`subjectKind` + `subjectId`) — per hour or per day (UTC), every bucket in the range included. Up to about a minute behind live checks. Default: the last 30 days, by day."""
+        Units used, checks allowed and refused for one limit — across all subjects, or one (`subject`, as `kind:id`) — per hour or per day (UTC), every bucket in the range included. Up to about a minute behind live checks. Default: the last 30 days, by day."""
         return self._client._call(
-            {"method": "get", "path": "/usage", "query": ["limitId", "subjectKind", "subjectId", "from", "to", "granularity"], "body": False, "names": {"limit_id": "limitId", "subject_kind": "subjectKind", "subject_id": "subjectId", "from_": "from", "to": "to", "granularity": "granularity"}},
+            {"method": "get", "path": "/usage", "query": ["limitId", "subject", "from", "to", "granularity"], "body": False, "names": {"limit_id": "limitId", "subject": "subject", "from_": "from", "to": "to", "granularity": "granularity"}},
             {},
-            {"limit_id": limit_id, "subject_kind": subject_kind, "subject_id": subject_id, "from_": from_, "to": to, "granularity": granularity},
+            {"limit_id": limit_id, "subject": subject, "from_": from_, "to": to, "granularity": granularity},
             request_options,
         )
 
-    def standing(self, *, kind: str, id: str, shared: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageStanding":
+    def standing(self, *, subject: str, shared: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageStanding":
         """Get where a subject stands
 
-        Every enabled limit on one subject — and on its shared subjects (`shared`, comma-separated `kind:id`, such as `team:team_42`) — with what is used, what is left and when it resets, exact as of now. For showing an end user where they stand: call it from your server with your key, never from a browser. Not a check: nothing is counted. A subject with no limit here answers an empty `limits` list."""
+        Every enabled limit on one subject (`subject`, as `kind:id`, such as `user:usr_123`) — and on its shared subjects (`shared`, comma-separated `kind:id`, such as `team:team_42`) — with what is used, what is left and when it resets, exact as of now. For showing an end user where they stand: call it from your server with your key, never from a browser. Not a check: nothing is counted. A subject with no limit here answers an empty `limits` list."""
         return self._client._call(
-            {"method": "get", "path": "/usage/standing", "query": ["kind", "id", "shared"], "body": False, "names": {"kind": "kind", "id": "id", "shared": "shared"}},
+            {"method": "get", "path": "/usage/standing", "query": ["subject", "shared"], "body": False, "names": {"subject": "subject", "shared": "shared"}},
             {},
-            {"kind": kind, "id": id, "shared": shared},
+            {"subject": subject, "shared": shared},
             request_options,
         )
 
     def subjects(self, *, limit_id: str, limit: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageBySubject":
         """List who is using a limit now
 
-        A limit's subjects in its CURRENT window, most used first: units used, what is left, how many checks were denied — `over` when any were. Up to about a minute behind live checks."""
+        A limit's subjects in its CURRENT window, most used first: units used, what is left, and how many checks it refused. Up to about a minute behind live checks."""
         return self._client._call(
             {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limit"], "body": False, "names": {"limit_id": "limitId", "limit": "limit"}},
             {},
@@ -553,7 +553,7 @@ class _AsyncChecks:
     async def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CheckDecision":
         """Check whether a subject may act
 
-        Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies, and — in `consume` mode — uses it. Always 200 for a decision: read `allowed`; `remaining` shows what is left per limit and `retryAfterSeconds` when to try again. An `Idempotency-Key` header makes a retried check return the same decision without using twice. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies, and — in `consume` mode — uses it. Always 200 for a decision, allowed or refused: read `allowed`; `limits` shows what is left on each limit and `retryAfterSeconds` when to try again. An `Idempotency-Key` header makes a retried check return the same decision without using twice. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return await self._client._call(
             {"method": "post", "path": "/checks", "query": [], "body": True, "names": {"subject": "subject", "shared": "shared", "action": "action", "cost": "cost", "mode": "mode", "ttl_seconds": "ttlSeconds"}},
             {},
@@ -562,27 +562,27 @@ class _AsyncChecks:
         )
 
 
-class _AsyncLimitsGrants:
+class _AsyncLimitsCredits:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitGrant":
+    async def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Credit":
         """Add credits to a balance
 
-        Adds `amount` to one subject's balance — a limit whose window is `total`. A negative `amount` takes credits back (a refund, a chargeback) and needs a `note` saying why; the balance may go below zero, and checks are refused until it is topped up. Owners and admins, or a workspace API key; an agent asks a person (the `limit.grant` approval)."""
+        Adds `amount` credits to one subject's balance — a limit whose window is `total`. A negative `amount` takes credits back (a refund, a chargeback) and needs a `note` saying why; the balance may go below zero, and checks are refused until more credits are added. Owners and admins, or a workspace API key; an agent asks a person (the `limit.credit` approval)."""
         return await self._client._call(
-            {"method": "post", "path": "/limits/{limitId}/grants", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
+            {"method": "post", "path": "/limits/{limitId}/credits", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
             {"limitId": limit_id},
             {"subject": subject, "amount": amount, "note": note},
             request_options,
         )
 
     async def list(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
-        """List a balance's grants
+        """List a balance's credits
 
-        Credits added to subjects' balances for this limit, newest first."""
+        Credits added to (or taken back from) subjects' balances for this limit, newest first."""
         return await self._client._call(
-            {"method": "get", "path": "/limits/{limitId}/grants", "query": [], "body": False, "names": {}},
+            {"method": "get", "path": "/limits/{limitId}/credits", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
             request_options,
@@ -592,12 +592,12 @@ class _AsyncLimitsGrants:
 class _AsyncLimits:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
-        self.grants = _AsyncLimitsGrants(client)
+        self.credits = _AsyncLimitsCredits(client)
 
     async def archive(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> None:
         """Archive a limit
 
-        Stops a limit: checks stop enforcing it within a minute, and it leaves the list. It is archived, not erased — its usage history and credit grants stay, and `POST /v1/limits/{limitId}/restore` brings it back. Owners and admins only, for a person's token."""
+        Stops a limit: checks stop enforcing it at once, and it leaves the list. It is archived, not erased — its usage history and credits stay, and `POST /v1/limits/{limitId}/restore` brings it back. Owners and admins only, for a person's token."""
         return await self._client._call(
             {"method": "post", "path": "/limits/{limitId}/archive", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
@@ -605,14 +605,14 @@ class _AsyncLimits:
             request_options,
         )
 
-    async def create(self, *, name: str, subject_kind: str, action: str, amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], subject_id: Optional[str] = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "anchor", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    async def create(self, *, subject: Dict[str, Any], amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], name: str = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
         """Create a limit
 
-        Limits how much of an action a subject may use per window — for example 200 cents of `ai-call` a month for every `user`. Checks enforce it from then on. Names are unique among the environment's active limits. Owners and admins only, for a person's token."""
+        Limits how much a subject may use per window — for example 200 cents a month for every `user`. Only `subject.kind`, `amount` and `window` are needed: `action` defaults to every action (`*`), `unit` to units, and `name` to the sentence the limit reads as. Checks enforce it from then on. What it counts (subject, action, unit, window, every, start, rolling) is fixed once created. Owners and admins only, for a person's token."""
         return await self._client._call(
-            {"method": "post", "path": "/limits", "query": [], "body": True, "names": {"name": "name", "subject_kind": "subjectKind", "subject_id": "subjectId", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
+            {"method": "post", "path": "/limits", "query": [], "body": True, "names": {"name": "name", "subject": "subject", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
             {},
-            {"name": name, "subject_kind": subject_kind, "subject_id": subject_id, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
+            {"name": name, "subject": subject, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
             request_options,
         )
 
@@ -649,25 +649,25 @@ class _AsyncLimits:
             request_options,
         )
 
-    async def sync(self, *, limits: List[Dict[str, Any]], archive_missing: bool = NOT_GIVEN, dry_run: bool = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitSyncResult":
+    async def sync(self, *, limits: List[Any], archive_missing: bool = NOT_GIVEN, preview: bool = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitSyncResult":
         """Sync limits from a list
 
-        Makes the environment's limits match `limits`, by name: creates the missing, changes those that differ (an omitted field means its default) and, with `archiveMissing`, archives active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list first, and a problem anywhere changes nothing (400, each problem in `details`); then it writes every change at once. `dryRun` answers the plan without writing. For keeping limits in a file in your repository (`limitry sync`). Owners and admins only, for a person's token."""
+        Makes the environment's limits match `limits`, by name: creates the missing, changes those that differ (an omitted field means its default) and, with `archiveMissing`, archives active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list first, and a problem anywhere changes nothing (400, each problem in `details`); then it writes every change at once. What a limit counts is fixed: a different subject, action, unit or window under an existing name is refused until the entry is renamed. `preview` answers what it would do without writing. For keeping limits in a file in your repository (`limitry sync`). Owners and admins only, for a person's token."""
         return await self._client._call(
-            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "dry_run": "dryRun"}},
+            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "preview": "preview"}},
             {},
-            {"limits": limits, "archive_missing": archive_missing, "dry_run": dry_run},
+            {"limits": limits, "archive_missing": archive_missing, "preview": preview},
             request_options,
         )
 
-    async def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, subject_kind: str = NOT_GIVEN, subject_id: Optional[str] = NOT_GIVEN, action: str = NOT_GIVEN, amount: int = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "anchor", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    async def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, amount: int = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, subject: Dict[str, Any] = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
         """Change a limit
 
-        Changes any of a limit's fields; checks use the new rule within a minute. Owners and admins only, for a person's token."""
+        Changes a limit's name, amount, fail mode or whether it is enabled; checks use the new rule at once. What a limit counts (subject, action, unit, window, every, start, rolling) is fixed: a different value is refused (400) — create a new limit and archive this one. Owners and admins only, for a person's token."""
         return await self._client._call(
-            {"method": "patch", "path": "/limits/{limitId}", "query": [], "body": True, "names": {"name": "name", "subject_kind": "subjectKind", "subject_id": "subjectId", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
+            {"method": "patch", "path": "/limits/{limitId}", "query": [], "body": True, "names": {"name": "name", "amount": "amount", "enabled": "enabled", "fail_mode": "failMode", "subject": "subject", "action": "action", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling"}},
             {"limitId": limit_id},
-            {"name": name, "subject_kind": subject_kind, "subject_id": subject_id, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
+            {"name": name, "amount": amount, "enabled": enabled, "fail_mode": fail_mode, "subject": subject, "action": action, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling},
             request_options,
         )
 
@@ -679,7 +679,7 @@ class _AsyncReservations:
     async def commit(self, reservation_id: Union[str, int], *, cost: int, request_options: Optional[RequestOptions] = None) -> "Reservation":
         """Commit a reservation
 
-        Settles a hold with the ACTUAL amount used (`cost`): less than held gives the rest back at once; more is charged in full — the work happened. A commit after the hold expired still charges `cost`. Repeating a commit answers the same. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Commits a reservation with the ACTUAL amount used (`cost`): less than reserved gives the rest back at once; more is charged in full — the work happened. A commit after the reservation expired still charges `cost`. Repeating a commit answers the same. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return await self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/commit", "query": [], "body": True, "names": {"cost": "cost"}},
             {"reservationId": reservation_id},
@@ -690,7 +690,7 @@ class _AsyncReservations:
     async def extend(self, reservation_id: Union[str, int], *, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Reservation":
         """Extend a reservation
 
-        Keeps a hold for longer work: it now expires `ttlSeconds` from now (default 300, at most 3600) — call it again as a heartbeat. Only a held reservation can be extended. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Keeps a reservation for longer work: it now expires `ttlSeconds` from now (default 300, at most 3600) — call it again as a heartbeat. Only an open reservation can be extended. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return await self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/extend", "query": [], "body": True, "names": {"ttl_seconds": "ttlSeconds"}},
             {"reservationId": reservation_id},
@@ -701,7 +701,7 @@ class _AsyncReservations:
     async def release(self, reservation_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Reservation":
         """Release a reservation
 
-        Gives the whole hold back — the work did not happen. Repeating a release answers the same; releasing a committed reservation is refused. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
+        Gives the whole reservation back — the work did not happen. Repeating a release answers the same; releasing a committed reservation is refused. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
         return await self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/release", "query": [], "body": False, "names": {}},
             {"reservationId": reservation_id},
@@ -717,7 +717,7 @@ class _AsyncSubjects:
     async def get(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Subject":
         """Get a subject
 
-        A subject's anchor: when its `anchor` limits' periods start from. A subject is yours (a user, a team, an agent) and exists once a check names it."""
+        A subject's billing date: when its `billing_date` limits' periods start from. A subject is yours (a user, a team, an agent) and exists once a check names it."""
         return await self._client._call(
             {"method": "get", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": False, "names": {}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
@@ -728,7 +728,7 @@ class _AsyncSubjects:
     async def reset(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, limit_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectResetResult":
         """Reset a subject's limits
 
-        Refills one limit on a subject (`limitId`), or every limit on it (`{}`), at once: for goodwill, a promotion or support. The schedule doesn't move: the next refill is still the usual one. A balance goes back to its amount; a concurrent limit is skipped. Send an Idempotency-Key and a repeat resets once. Owners and admins only, for a person's token."""
+        Resets one limit on a subject (`limitId`), or every limit on it (`{}`), at once: for goodwill, a promotion or support. The schedule doesn't move: the next reset is still the usual one. A balance goes back to its amount; a concurrent limit is skipped. Send an Idempotency-Key and a repeat resets once. Owners and admins only, for a person's token."""
         return await self._client._call(
             {"method": "post", "path": "/subjects/{subjectKind}/{subjectId}/reset", "query": [], "body": True, "names": {"limit_id": "limitId"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
@@ -736,14 +736,14 @@ class _AsyncSubjects:
             request_options,
         )
 
-    async def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, anchor: str, request_options: Optional[RequestOptions] = None) -> "Subject":
-        """Set a subject's anchor
+    async def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, billing_date: str, request_options: Optional[RequestOptions] = None) -> "Subject":
+        """Set a subject's billing date
 
-        Sets when a subject's `anchor` limits' periods start from: typically its subscription's start date, from your billing system's webhook, so its allowance refills on its own billing day (monthly for an annual plan, too). Owners and admins only, for a person's token."""
+        Sets when a subject's `billing_date` limits' periods start from: typically its subscription's start date, from your billing system's webhook, so its allowance resets on its own billing day (monthly for an annual plan, too). Owners and admins only, for a person's token."""
         return await self._client._call(
-            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"anchor": "anchor"}},
+            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"billing_date": "billingDate"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
-            {"anchor": anchor},
+            {"billing_date": billing_date},
             request_options,
         )
 
@@ -752,32 +752,32 @@ class _AsyncUsage:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def query(self, *, limit_id: str, subject_kind: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageSeries":
+    async def query(self, *, limit_id: str, subject: str = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageSeries":
         """Get a limit's usage over time
 
-        Units used, checks allowed and denied for one limit — across all subjects, or one (`subjectKind` + `subjectId`) — per hour or per day (UTC), every bucket in the range included. Up to about a minute behind live checks. Default: the last 30 days, by day."""
+        Units used, checks allowed and refused for one limit — across all subjects, or one (`subject`, as `kind:id`) — per hour or per day (UTC), every bucket in the range included. Up to about a minute behind live checks. Default: the last 30 days, by day."""
         return await self._client._call(
-            {"method": "get", "path": "/usage", "query": ["limitId", "subjectKind", "subjectId", "from", "to", "granularity"], "body": False, "names": {"limit_id": "limitId", "subject_kind": "subjectKind", "subject_id": "subjectId", "from_": "from", "to": "to", "granularity": "granularity"}},
+            {"method": "get", "path": "/usage", "query": ["limitId", "subject", "from", "to", "granularity"], "body": False, "names": {"limit_id": "limitId", "subject": "subject", "from_": "from", "to": "to", "granularity": "granularity"}},
             {},
-            {"limit_id": limit_id, "subject_kind": subject_kind, "subject_id": subject_id, "from_": from_, "to": to, "granularity": granularity},
+            {"limit_id": limit_id, "subject": subject, "from_": from_, "to": to, "granularity": granularity},
             request_options,
         )
 
-    async def standing(self, *, kind: str, id: str, shared: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageStanding":
+    async def standing(self, *, subject: str, shared: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageStanding":
         """Get where a subject stands
 
-        Every enabled limit on one subject — and on its shared subjects (`shared`, comma-separated `kind:id`, such as `team:team_42`) — with what is used, what is left and when it resets, exact as of now. For showing an end user where they stand: call it from your server with your key, never from a browser. Not a check: nothing is counted. A subject with no limit here answers an empty `limits` list."""
+        Every enabled limit on one subject (`subject`, as `kind:id`, such as `user:usr_123`) — and on its shared subjects (`shared`, comma-separated `kind:id`, such as `team:team_42`) — with what is used, what is left and when it resets, exact as of now. For showing an end user where they stand: call it from your server with your key, never from a browser. Not a check: nothing is counted. A subject with no limit here answers an empty `limits` list."""
         return await self._client._call(
-            {"method": "get", "path": "/usage/standing", "query": ["kind", "id", "shared"], "body": False, "names": {"kind": "kind", "id": "id", "shared": "shared"}},
+            {"method": "get", "path": "/usage/standing", "query": ["subject", "shared"], "body": False, "names": {"subject": "subject", "shared": "shared"}},
             {},
-            {"kind": kind, "id": id, "shared": shared},
+            {"subject": subject, "shared": shared},
             request_options,
         )
 
     async def subjects(self, *, limit_id: str, limit: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageBySubject":
         """List who is using a limit now
 
-        A limit's subjects in its CURRENT window, most used first: units used, what is left, how many checks were denied — `over` when any were. Up to about a minute behind live checks."""
+        A limit's subjects in its CURRENT window, most used first: units used, what is left, and how many checks it refused. Up to about a minute behind live checks."""
         return await self._client._call(
             {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limit"], "body": False, "names": {"limit_id": "limitId", "limit": "limit"}},
             {},
