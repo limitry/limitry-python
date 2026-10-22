@@ -15,7 +15,7 @@ class _Checks:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CheckDecision":
+    def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> Union["CheckDecision", None]:
         """Check whether a subject may act
 
         Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies, and — in `consume` mode — uses it. Always 200 for a decision, allowed or refused: read `allowed`; `limits` shows what is left on each limit and `retryAfterSeconds` when to try again. An `Idempotency-Key` header makes a retried check return the same decision without using twice. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""
@@ -550,7 +550,7 @@ class _AsyncChecks:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CheckDecision":
+    async def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> Union["CheckDecision", None]:
         """Check whether a subject may act
 
         Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies, and — in `consume` mode — uses it. Always 200 for a decision, allowed or refused: read `allowed`; `limits` shows what is left on each limit and `retryAfterSeconds` when to try again. An `Idempotency-Key` header makes a retried check return the same decision without using twice. Its API-key check is cached briefly for speed: a revoked key can keep working here for up to 60 seconds."""

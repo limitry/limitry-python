@@ -84,8 +84,9 @@ def test_refusal_shows_the_apis_sentence(sdk):
 
 @pytest.fixture
 def no_waiting(monkeypatch):
-    """Backoff without the wait: retries happen at once, inside the budget."""
+    """Backoff without the wait (and without jitter): retries happen at once, inside the budget."""
     monkeypatch.setattr("time.sleep", lambda seconds: None)
+    monkeypatch.setattr("random.random", lambda: 0.0)
 
     async def instant(seconds):
         return None
@@ -378,3 +379,129 @@ def test_async_cost_is_checked_too(sdk):
 
     with pytest.raises(ValueError):
         asyncio.run(run())
+
+
+def moving():
+    return httpx.Response(503, json={"error": {"code": "moving"}}, headers={"retry-after": "1"})
+
+
+def test_moving_is_asked_again_with_the_same_key_outside_the_budget(sdk, monkeypatch):
+    # A subject being handed over: reached, nothing counted — not
+    # "unreachable". Each attempt gets a fresh budget; the block is counted.
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    answers = [moving(), moving(), moving(), httpx.Response(200, json=allowed())]
+    limitry, seen = api(sdk, lambda r: answers.pop(0))
+    ran = []
+    with limitry.guard(subject=USER, action="a", timeout=1.5):
+        ran.append(True)
+    assert ran == [True] and len(seen) == 4 and slept == [1.0, 1.0, 1.0]
+    assert len({r.headers["idempotency-key"] for r in seen}) == 1
+
+
+def test_moving_for_30_seconds_lets_the_fail_mode_decide(sdk, no_waiting):
+    limitry, seen = api(sdk, lambda r: moving())
+    with limitry.guard(subject=USER, action="a"):
+        pass  # open: ran unmetered, but only after 30 s
+    assert len(seen) == 31
+    with pytest.raises(sdk.Unavailable):
+        with limitry.guard(subject=USER, action="a", fail_mode="closed"):
+            pass
+
+
+def test_a_commit_keeps_going_through_a_handover(sdk, no_waiting):
+    commits = []
+
+    def handler(request):
+        if request.url.path.endswith("/checks"):
+            return httpx.Response(200, json=allowed(reservation={"id": "rsv_m"}))
+        commits.append(request)
+        return moving() if len(commits) < 3 else httpx.Response(200, json={})
+
+    limitry, _ = api(sdk, handler)
+    with limitry.reserve(subject=USER, action="a", cost=2):
+        pass
+    assert len(commits) == 3
+    assert len({r.headers["idempotency-key"] for r in commits}) == 1
+
+
+def test_async_moving_is_asked_again(sdk, no_waiting):
+    answers = [moving(), httpx.Response(200, json=allowed())]
+
+    async def run():
+        client = sdk.AsyncLimitry(
+            token="sk_test",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: answers.pop(0))),
+        )
+        async with client.guard(subject=USER, action="a"):
+            return True
+
+    assert asyncio.run(run())
+
+
+def test_moving_with_retry_after_zero_waits_a_second_and_ends(sdk, monkeypatch):
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    limitry, seen = api(
+        sdk,
+        lambda r: httpx.Response(503, json={"error": {"code": "moving"}}, headers={"retry-after": "0"}),
+    )
+    with limitry.guard(subject=USER, action="a"):
+        pass
+    assert len(seen) == 31 and all(s == 1.0 for s in slept)
+
+
+def busy(seconds="2"):
+    return httpx.Response(503, json={"error": {"code": "busy"}}, headers={"retry-after": seconds})
+
+
+def test_busy_is_asked_again_after_retry_after_plus_jitter(sdk, monkeypatch):
+    # An overloaded limiter: reached, nothing counted — retried with the
+    # same key, waiting Retry-After plus a jittered, growing backoff.
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+    monkeypatch.setattr("random.random", lambda: 0.5)
+    answers = [busy(), busy(), busy(), httpx.Response(200, json=allowed())]
+    limitry, seen = api(sdk, lambda r: answers.pop(0))
+    ran = []
+    with limitry.guard(subject=USER, action="a", timeout=1.5):
+        ran.append(True)
+    assert ran == [True] and len(seen) == 4
+    assert slept == [2.125, 2.25, 2.5]
+    assert len({r.headers["idempotency-key"] for r in seen}) == 1
+
+
+def test_busy_shares_movings_30_seconds_then_the_fail_mode_decides(sdk, monkeypatch):
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+    flip = []
+
+    def handler(request):
+        flip.append(1)
+        return busy("1") if len(flip) % 2 else moving()
+
+    limitry, seen = api(sdk, handler)
+    with limitry.guard(subject=USER, action="a"):
+        pass  # open: ran unmetered, but only after 30 s
+    assert sum(slept) <= 30.0 and len(seen) > 5
+    for n, s in enumerate(slept):
+        assert 1.0 <= s < 1.0 + min(4.0, 0.25 * 2**n)
+    with pytest.raises(sdk.Unavailable):
+        with limitry.guard(subject=USER, action="a", fail_mode="closed"):
+            pass
+
+
+def test_async_busy_is_asked_again(sdk, no_waiting):
+    answers = [busy(), httpx.Response(200, json=allowed())]
+
+    async def run():
+        client = sdk.AsyncLimitry(
+            token="sk_test",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: answers.pop(0))),
+        )
+        async with client.guard(subject=USER, action="a"):
+            return True
+
+    assert asyncio.run(run()) and answers == []

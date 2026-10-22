@@ -2,6 +2,46 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc7 (2026-10-22)
+
+### Added
+
+- `POST /v1/checks` can now answer `503` with the code `busy` when
+  Limitry is deciding too many checks for those subjects at once. Nothing
+  was charged. `guard` and `reserve` (TypeScript and Python) send the
+  check again with the same key, within the same 30 seconds they give
+  `moving`, before the limit's fail mode decides. Each retry of `busy` or
+  `moving` now waits the answer's `Retry-After` plus a random backoff that
+  grows with each try, so clients don't all come back at the same moment.
+  Older SDK versions treat `busy` as Limitry being unreachable after their
+  usual two quick retries, so the fail mode decides; upgrade to retry it.
+
+### Changed
+
+- A very busy workspace's counts are now spread over more of Limitry's
+  servers as its traffic grows. While some of them move, which takes a few
+  seconds, checks, commits and releases on those subjects answer `503`
+  with the new error code `moving` and `Retry-After: 1`; nothing is
+  counted. `guard` and `reserve` (TypeScript and Python) and the CLI send
+  the same request again with the same Idempotency-Key for up to 30
+  seconds, each try with its own time budget, before a limit's fail mode
+  applies, so work is neither run uncounted nor left uncommitted.
+
+### Fixed
+
+- A reservation (`mode: "reserve"`) now starts a subject's period, as a
+  plain check does: on a `billing_date` limit with no billing date set
+  yet, the first reservation's time becomes the subject's billing date,
+  and on a `first_use` limit it starts the period. Before, reservations
+  made before the subject's first commit could each count in a period of
+  their own, so a monthly limit could let more through than its amount.
+  A reservation you release still starts the period, with nothing used in
+  it.
+- A `503 moving` answer with `Retry-After: 0` is now retried after at least
+  a second, not at once, and still for at most 30 seconds. A client made
+  with `maxRetries: 0` no longer sends the SDK's internal
+  `x-limitry-moving` header to the API.
+
 ## 1.0.0rc6 (2026-10-21)
 
 ### Added

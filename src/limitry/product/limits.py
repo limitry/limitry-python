@@ -31,10 +31,22 @@
 # sends the check again with the same key (a replay, nothing counted
 # twice) and releases the reservation it finds. Commits and releases
 # retry the same way within 5 s.
+#
+# A subject being handed over between Limitry's servers (a split, a few
+# seconds) answers `503 moving`: Limitry was reached and charged nothing,
+# so it isn't "unreachable" — the check, commit or release is sent again
+# with the same key for up to 30 s, each attempt with a fresh budget,
+# before the fail mode applies. A limiter with too many checks inside at
+# once answers `503 busy` the same way (nothing charged): both share the
+# 30 s, and each wait is the answer's Retry-After (at least a second)
+# plus full jitter on a growing backoff — the TypeScript SDK's
+# `retryWaitMs` — so clients turned away together don't come back
+# together.
 
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 import uuid
 from collections import OrderedDict
@@ -73,6 +85,11 @@ _UNREACHABLE: Any = object()
 _TIMED_OUT: Any = object()
 # How long a commit or release (or a replay to find a reservation) may take, retries included.
 _SETTLE_TIMEOUT = 5.0
+# How long a `moving` or `busy` answer is asked again, all told: a handover's freeze lasts at most 30 s.
+_MOVING = 30.0
+# The backoff added to a `moving` or `busy` wait: full jitter under base × 2^n, capped (seconds).
+_JITTER_BASE = 0.25
+_JITTER_CAP = 4.0
 _MEMORY = 10_000
 # The largest cost a commit takes.
 _MAX_COST = 1_000_000_000
@@ -202,6 +219,33 @@ def _answer(response: httpx.Response) -> Any:
     )
 
 
+def _retry_wait(retry_after: float, attempt: int) -> float:
+    """The wait before asking again after a `moving` or `busy` answer, the
+    `attempt`th in a row (0 first): Retry-After, at least a second (a 0, or
+    a date past, must not spin), plus anywhere from 0 to
+    min(_JITTER_CAP, _JITTER_BASE × 2^attempt)."""
+    ceiling = min(_JITTER_CAP, _JITTER_BASE * 2**attempt)
+    return max(1.0, retry_after) + random.random() * ceiling
+
+
+def _moving(response: httpx.Response, attempt: int = 0) -> Optional[float]:
+    """Seconds to wait before asking again, for a `503 moving` or `503
+    busy` (nothing charged: retry with the same key); else None."""
+    if response.status_code != 503:
+        return None
+    try:
+        code = (response.json().get("error") or {}).get("code")
+    except ValueError:
+        return None
+    if code not in ("moving", "busy"):
+        return None
+    try:
+        retry_after = float(response.headers.get("retry-after") or 1)
+    except ValueError:
+        retry_after = 1.0
+    return _retry_wait(retry_after, attempt)
+
+
 def _standing_query(subject: Subject, shared: Optional[List[Subject]]) -> Dict[str, Any]:
     query: Dict[str, Any] = {"subject": f"{subject['kind']}:{subject['id']}"}
     if shared:
@@ -246,6 +290,8 @@ class ProductMethods:
         headers = {**self._headers, "idempotency-key": key}
         deadline = time.monotonic() + budget
         attempt = 0
+        moving_waited = 0.0
+        moving_tries = 0
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -262,6 +308,16 @@ class ProductMethods:
                     return _UNREACHABLE
                 delay: Optional[float] = _backoff(attempt)
             else:
+                moving = _moving(response, moving_tries)
+                if moving is not None:
+                    moving_tries += 1
+                    # Reached, nothing counted: asked again, outside the budget.
+                    if moving_waited + moving > _MOVING:
+                        return _UNREACHABLE
+                    moving_waited += moving
+                    time.sleep(moving)
+                    deadline = time.monotonic() + budget
+                    continue
                 delay = None if last or not _retryable(response) else _wait(response, attempt)
                 if delay is None:
                     return response
@@ -396,6 +452,8 @@ class AsyncProductMethods:
         headers = {**self._headers, "idempotency-key": key}
         deadline = time.monotonic() + budget
         attempt = 0
+        moving_waited = 0.0
+        moving_tries = 0
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -412,6 +470,16 @@ class AsyncProductMethods:
                     return _UNREACHABLE
                 delay: Optional[float] = _backoff(attempt)
             else:
+                moving = _moving(response, moving_tries)
+                if moving is not None:
+                    moving_tries += 1
+                    # Reached, nothing counted: asked again, outside the budget.
+                    if moving_waited + moving > _MOVING:
+                        return _UNREACHABLE
+                    moving_waited += moving
+                    await asyncio.sleep(moving)
+                    deadline = time.monotonic() + budget
+                    continue
                 delay = None if last or not _retryable(response) else _wait(response, attempt)
                 if delay is None:
                     return response
