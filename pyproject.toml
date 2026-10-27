@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "limitry"
-version = "1.0.0rc7"
+version = "1.0.0rc8"
 description = "Limitry API client"
 readme = "README.md"
 license = "Apache-2.0"

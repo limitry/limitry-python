@@ -30,18 +30,18 @@
 # out may have been made all the same: once the block is done, `reserve`
 # sends the check again with the same key (a replay, nothing counted
 # twice) and releases the reservation it finds. Commits and releases
-# retry the same way within 5 s.
+# retry the same way within the same `timeout`.
 #
 # A subject being handed over between Limitry's servers (a split, a few
-# seconds) answers `503 moving`: Limitry was reached and charged nothing,
-# so it isn't "unreachable" — the check, commit or release is sent again
-# with the same key for up to 30 s, each attempt with a fresh budget,
-# before the fail mode applies. A limiter with too many checks inside at
-# once answers `503 busy` the same way (nothing charged): both share the
-# 30 s, and each wait is the answer's Retry-After (at least a second)
-# plus full jitter on a growing backoff — the TypeScript SDK's
-# `retryWaitMs` — so clients turned away together don't come back
-# together.
+# seconds) answers `503 moving`, and a limiter with too many checks
+# inside at once `503 busy`: Limitry was reached and charged nothing. The
+# check, commit or release is sent again with the same key only while the
+# wait still fits in `timeout` — the wait is the answer's Retry-After (at
+# least a second) plus full jitter on a growing backoff, the TypeScript
+# SDK's `retryWaitMs` — and then the fail mode applies. These helpers sit
+# in front of a user, so they answer within `timeout` whatever Limitry
+# says; and a refused check that comes back once, not for half a minute,
+# doesn't keep an overloaded limiter full.
 
 from __future__ import annotations
 
@@ -83,10 +83,6 @@ FailMode = Literal["open", "closed"]
 _UNREACHABLE: Any = object()
 # No answer in time: unlike an error, the check may have been decided.
 _TIMED_OUT: Any = object()
-# How long a commit or release (or a replay to find a reservation) may take, retries included.
-_SETTLE_TIMEOUT = 5.0
-# How long a `moving` or `busy` answer is asked again, all told: a handover's freeze lasts at most 30 s.
-_MOVING = 30.0
 # The backoff added to a `moving` or `busy` wait: full jitter under base × 2^n, capped (seconds).
 _JITTER_BASE = 0.25
 _JITTER_CAP = 4.0
@@ -253,6 +249,19 @@ def _standing_query(subject: Subject, shared: Optional[List[Subject]]) -> Dict[s
     return query
 
 
+class _Budget:
+    """What is left of a time budget, called: the time since the start, or
+    the waits slept, whichever is more (a test's fake sleep takes none)."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.started = time.monotonic()
+        self.slept = 0.0
+
+    def __call__(self) -> float:
+        return self.seconds - max(time.monotonic() - self.started, self.slept)
+
+
 class _Memory:
     """The last fail mode seen per subject + action (closed if any limit is)."""
 
@@ -288,18 +297,17 @@ class ProductMethods:
         (a network error on the last try). The client's retry rule, inside
         one time budget: the TypeScript SDK's `check` and `settle`."""
         headers = {**self._headers, "idempotency-key": key}
-        deadline = time.monotonic() + budget
+        left = _Budget(budget)
         attempt = 0
-        moving_waited = 0.0
         moving_tries = 0
         while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
+            remaining = left()
+            if remaining <= 0:
                 return _TIMED_OUT
             last = attempt >= getattr(self, "_max_retries", DEFAULT_MAX_RETRIES)
             try:
                 response = self._http.post(
-                    self._base_url + path, json=body, headers=headers, timeout=left
+                    self._base_url + path, json=body, headers=headers, timeout=remaining
                 )
             except httpx.TimeoutException:
                 return _TIMED_OUT
@@ -311,18 +319,18 @@ class ProductMethods:
                 moving = _moving(response, moving_tries)
                 if moving is not None:
                     moving_tries += 1
-                    # Reached, nothing counted: asked again, outside the budget.
-                    if moving_waited + moving > _MOVING:
+                    # Reached, nothing counted: asked again only while the wait fits.
+                    if moving >= left():
                         return _UNREACHABLE
-                    moving_waited += moving
+                    left.slept += moving
                     time.sleep(moving)
-                    deadline = time.monotonic() + budget
                     continue
                 delay = None if last or not _retryable(response) else _wait(response, attempt)
                 if delay is None:
                     return response
-            if delay >= deadline - time.monotonic():
+            if delay >= left():
                 return _TIMED_OUT
+            left.slept += delay
             time.sleep(delay)
             attempt += 1
 
@@ -330,18 +338,19 @@ class ProductMethods:
         response = self._send("/checks", body, key, timeout)
         return response if response is _TIMED_OUT or response is _UNREACHABLE else _answer(response)
 
-    def _release_unheard(self, body: Dict[str, Any], key: str) -> None:
+    def _release_unheard(self, body: Dict[str, Any], key: str, timeout: float) -> None:
         # After a reservation's check timed out: ask again with the same key
         # (a replay if Limitry decided it) and release any reservation it made.
-        replay = self._check(body, _SETTLE_TIMEOUT, key)
+        replay = self._check(body, timeout, key)
         if isinstance(replay, dict) and replay.get("reservation"):
-            self._settle(f"/reservations/{replay['reservation']['id']}/release", None)
+            self._settle(f"/reservations/{replay['reservation']['id']}/release", None, timeout)
 
-    def _settle(self, path: str, body: Optional[Dict[str, Any]]) -> None:
+    def _settle(self, path: str, body: Optional[Dict[str, Any]], timeout: float) -> None:
         # Committing or releasing never fails the caller's work: it is
-        # retried (the same commit answers the same), and a lost one expires
-        # by itself.
-        self._send(path, body, str(uuid.uuid4()), _SETTLE_TIMEOUT)
+        # retried (the same commit answers the same) within `timeout`, as
+        # it runs before the block's caller goes on; a lost one expires by
+        # itself (an expired reservation is not charged).
+        self._send(path, body, str(uuid.uuid4()), timeout)
 
     @contextmanager
     def guard(
@@ -393,13 +402,13 @@ class ProductMethods:
             timed_out = decision is _TIMED_OUT
             if memory.mode(subject, action, fail_mode) == "closed":
                 if timed_out:
-                    self._release_unheard(body, key)
+                    self._release_unheard(body, key, timeout)
                 raise Unavailable()
             try:
                 yield Reservation(cost)
             finally:
                 if timed_out:
-                    self._release_unheard(body, key)
+                    self._release_unheard(body, key, timeout)
             return
         if not fail_mode:
             memory.remember(subject, action, decision)
@@ -421,9 +430,9 @@ class ProductMethods:
         try:
             yield reserved
         except BaseException:
-            self._settle(path + "/release", None)
+            self._settle(path + "/release", None, timeout)
             raise
-        self._settle(path + "/commit", {"cost": reserved.used})
+        self._settle(path + "/commit", {"cost": reserved.used}, timeout)
 
     def standing(self, *, subject: Subject, shared: Optional[List[Subject]] = None) -> Dict[str, Any]:
         """Where a subject stands on every limit on it: used, remaining,
@@ -450,18 +459,17 @@ class AsyncProductMethods:
     async def _send(self, path: str, body: Any, key: str, budget: float) -> Any:
         """The answer, _TIMED_OUT or _UNREACHABLE (see ProductMethods._send)."""
         headers = {**self._headers, "idempotency-key": key}
-        deadline = time.monotonic() + budget
+        left = _Budget(budget)
         attempt = 0
-        moving_waited = 0.0
         moving_tries = 0
         while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
+            remaining = left()
+            if remaining <= 0:
                 return _TIMED_OUT
             last = attempt >= getattr(self, "_max_retries", DEFAULT_MAX_RETRIES)
             try:
                 response = await self._http.post(
-                    self._base_url + path, json=body, headers=headers, timeout=left
+                    self._base_url + path, json=body, headers=headers, timeout=remaining
                 )
             except httpx.TimeoutException:
                 return _TIMED_OUT
@@ -473,18 +481,18 @@ class AsyncProductMethods:
                 moving = _moving(response, moving_tries)
                 if moving is not None:
                     moving_tries += 1
-                    # Reached, nothing counted: asked again, outside the budget.
-                    if moving_waited + moving > _MOVING:
+                    # Reached, nothing counted: asked again only while the wait fits.
+                    if moving >= left():
                         return _UNREACHABLE
-                    moving_waited += moving
+                    left.slept += moving
                     await asyncio.sleep(moving)
-                    deadline = time.monotonic() + budget
                     continue
                 delay = None if last or not _retryable(response) else _wait(response, attempt)
                 if delay is None:
                     return response
-            if delay >= deadline - time.monotonic():
+            if delay >= left():
                 return _TIMED_OUT
+            left.slept += delay
             await asyncio.sleep(delay)
             attempt += 1
 
@@ -492,15 +500,15 @@ class AsyncProductMethods:
         response = await self._send("/checks", body, key, timeout)
         return response if response is _TIMED_OUT or response is _UNREACHABLE else _answer(response)
 
-    async def _release_unheard(self, body: Dict[str, Any], key: str) -> None:
+    async def _release_unheard(self, body: Dict[str, Any], key: str, timeout: float) -> None:
         # After a reservation's check timed out: ask again with the same key
         # (a replay if Limitry decided it) and release any reservation it made.
-        replay = await self._check(body, _SETTLE_TIMEOUT, key)
+        replay = await self._check(body, timeout, key)
         if isinstance(replay, dict) and replay.get("reservation"):
-            await self._settle(f"/reservations/{replay['reservation']['id']}/release", None)
+            await self._settle(f"/reservations/{replay['reservation']['id']}/release", None, timeout)
 
-    async def _settle(self, path: str, body: Optional[Dict[str, Any]]) -> None:
-        await self._send(path, body, str(uuid.uuid4()), _SETTLE_TIMEOUT)
+    async def _settle(self, path: str, body: Optional[Dict[str, Any]], timeout: float) -> None:
+        await self._send(path, body, str(uuid.uuid4()), timeout)
 
     @asynccontextmanager
     async def guard(
@@ -549,13 +557,13 @@ class AsyncProductMethods:
             timed_out = decision is _TIMED_OUT
             if memory.mode(subject, action, fail_mode) == "closed":
                 if timed_out:
-                    await self._release_unheard(body, key)
+                    await self._release_unheard(body, key, timeout)
                 raise Unavailable()
             try:
                 yield AsyncReservation(cost)
             finally:
                 if timed_out:
-                    await self._release_unheard(body, key)
+                    await self._release_unheard(body, key, timeout)
             return
         if not fail_mode:
             memory.remember(subject, action, decision)
@@ -577,9 +585,9 @@ class AsyncProductMethods:
         try:
             yield reserved
         except BaseException:
-            await self._settle(path + "/release", None)
+            await self._settle(path + "/release", None, timeout)
             raise
-        await self._settle(path + "/commit", {"cost": reserved.used})
+        await self._settle(path + "/commit", {"cost": reserved.used}, timeout)
 
     async def standing(
         self, *, subject: Subject, shared: Optional[List[Subject]] = None

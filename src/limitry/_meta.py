@@ -3,4 +3,4 @@
 PRODUCT_NAME = "Limitry"
 API_KEY_ENV = "LIMITRY_API_KEY"
 DEFAULT_API = "https://api.limitry.com"
-VERSION = "1.0.0rc7"
+VERSION = "1.0.0rc8"

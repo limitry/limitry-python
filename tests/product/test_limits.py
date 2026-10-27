@@ -385,26 +385,27 @@ def moving():
     return httpx.Response(503, json={"error": {"code": "moving"}}, headers={"retry-after": "1"})
 
 
-def test_moving_is_asked_again_with_the_same_key_outside_the_budget(sdk, monkeypatch):
-    # A subject being handed over: reached, nothing counted — not
-    # "unreachable". Each attempt gets a fresh budget; the block is counted.
+def test_moving_is_asked_again_with_the_same_key_while_the_wait_fits(sdk, monkeypatch):
+    # A subject being handed over: reached, nothing counted — asked again
+    # while the wait fits in `timeout`; the block is counted.
     slept = []
     monkeypatch.setattr("time.sleep", slept.append)
     monkeypatch.setattr("random.random", lambda: 0.0)
     answers = [moving(), moving(), moving(), httpx.Response(200, json=allowed())]
     limitry, seen = api(sdk, lambda r: answers.pop(0))
     ran = []
-    with limitry.guard(subject=USER, action="a", timeout=1.5):
+    with limitry.guard(subject=USER, action="a", timeout=10):
         ran.append(True)
     assert ran == [True] and len(seen) == 4 and slept == [1.0, 1.0, 1.0]
     assert len({r.headers["idempotency-key"] for r in seen}) == 1
 
 
-def test_moving_for_30_seconds_lets_the_fail_mode_decide(sdk, no_waiting):
+def test_moving_past_the_timeout_lets_the_fail_mode_decide(sdk, no_waiting):
     limitry, seen = api(sdk, lambda r: moving())
     with limitry.guard(subject=USER, action="a"):
-        pass  # open: ran unmetered, but only after 30 s
-    assert len(seen) == 31
+        pass  # open: ran unmetered, within the 1.5 s
+    # Asked, a second's wait (fits), asked again; the next won't fit.
+    assert len(seen) == 2
     with pytest.raises(sdk.Unavailable):
         with limitry.guard(subject=USER, action="a", fail_mode="closed"):
             pass
@@ -420,7 +421,7 @@ def test_a_commit_keeps_going_through_a_handover(sdk, no_waiting):
         return moving() if len(commits) < 3 else httpx.Response(200, json={})
 
     limitry, _ = api(sdk, handler)
-    with limitry.reserve(subject=USER, action="a", cost=2):
+    with limitry.reserve(subject=USER, action="a", cost=2, timeout=10):
         pass
     assert len(commits) == 3
     assert len({r.headers["idempotency-key"] for r in commits}) == 1
@@ -450,7 +451,7 @@ def test_moving_with_retry_after_zero_waits_a_second_and_ends(sdk, monkeypatch):
     )
     with limitry.guard(subject=USER, action="a"):
         pass
-    assert len(seen) == 31 and all(s == 1.0 for s in slept)
+    assert len(seen) == 2 and slept == [1.0]
 
 
 def busy(seconds="2"):
@@ -466,14 +467,14 @@ def test_busy_is_asked_again_after_retry_after_plus_jitter(sdk, monkeypatch):
     answers = [busy(), busy(), busy(), httpx.Response(200, json=allowed())]
     limitry, seen = api(sdk, lambda r: answers.pop(0))
     ran = []
-    with limitry.guard(subject=USER, action="a", timeout=1.5):
+    with limitry.guard(subject=USER, action="a", timeout=30):
         ran.append(True)
     assert ran == [True] and len(seen) == 4
     assert slept == [2.125, 2.25, 2.5]
     assert len({r.headers["idempotency-key"] for r in seen}) == 1
 
 
-def test_busy_shares_movings_30_seconds_then_the_fail_mode_decides(sdk, monkeypatch):
+def test_busy_shares_movings_budget_then_the_fail_mode_decides(sdk, monkeypatch):
     slept = []
     monkeypatch.setattr("time.sleep", slept.append)
     flip = []
@@ -483,8 +484,8 @@ def test_busy_shares_movings_30_seconds_then_the_fail_mode_decides(sdk, monkeypa
         return busy("1") if len(flip) % 2 else moving()
 
     limitry, seen = api(sdk, handler)
-    with limitry.guard(subject=USER, action="a"):
-        pass  # open: ran unmetered, but only after 30 s
+    with limitry.guard(subject=USER, action="a", timeout=30):
+        pass  # open: ran unmetered, within the 30 s given
     assert sum(slept) <= 30.0 and len(seen) > 5
     for n, s in enumerate(slept):
         assert 1.0 <= s < 1.0 + min(4.0, 0.25 * 2**n)
@@ -494,7 +495,7 @@ def test_busy_shares_movings_30_seconds_then_the_fail_mode_decides(sdk, monkeypa
 
 
 def test_async_busy_is_asked_again(sdk, no_waiting):
-    answers = [busy(), httpx.Response(200, json=allowed())]
+    answers = [busy("1"), httpx.Response(200, json=allowed())]
 
     async def run():
         client = sdk.AsyncLimitry(
@@ -505,3 +506,24 @@ def test_async_busy_is_asked_again(sdk, no_waiting):
             return True
 
     assert asyncio.run(run()) and answers == []
+
+
+def test_a_commit_that_stays_busy_gives_up_within_the_timeout(sdk, monkeypatch):
+    # The commit runs before the caller goes on: after `timeout` it is let
+    # go (the reservation expires, uncharged) and the block's work stands.
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    commits = []
+
+    def handler(request):
+        if request.url.path.endswith("/checks"):
+            return httpx.Response(200, json=allowed(reservation={"id": "rsv_b"}))
+        commits.append(request)
+        return busy("1")
+
+    limitry, _ = api(sdk, handler)
+    ran = []
+    with limitry.reserve(subject=USER, action="a"):
+        ran.append(True)
+    assert ran == [True] and len(commits) == 2 and slept == [1.0]

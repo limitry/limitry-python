@@ -509,6 +509,17 @@ class _WorkspaceWebhookEndpoints:
             request_options,
         )
 
+    def update(self, endpoint_id: Union[str, int], *, url: str = NOT_GIVEN, description: Optional[str] = NOT_GIVEN, event_types: Optional[List[str]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+        """Update a webhook endpoint
+
+        Changes an endpoint's URL, description or event types in place; only the fields sent change. The endpoint keeps its signing secret, so receivers keep verifying deliveries. A new URL passes the same checks as on create: https only, no private hosts."""
+        return self._client._call(
+            {"method": "patch", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": True, "names": {"url": "url", "description": "description", "event_types": "eventTypes"}},
+            {"endpointId": endpoint_id},
+            {"url": url, "description": description, "event_types": event_types},
+            request_options,
+        )
+
 
 class _Workspace:
     def __init__(self, client: "Client") -> None:
@@ -537,7 +548,7 @@ class _Workspace:
     def usage(self, *, request_options: Optional[RequestOptions] = None) -> "WorkspaceUsage":
         """Get your plan's usage this period
 
-        How much of each meter the workspace used this period, with the plan's limit for it (null = unlimited). A period is a month from the workspace's billing date: its subscription's (an annual plan refills monthly from its start), else the day the workspace was created."""
+        How much of each meter the workspace used this period, with the plan's limit for it (null = unlimited). A period is a month from the workspace's billing date: its subscription's (an annual plan's counts reset monthly from its start), else the day the workspace was created."""
         return self._client._call(
             {"method": "get", "path": "/workspace/usage", "query": [], "body": False, "names": {}},
             {},
@@ -1044,6 +1055,17 @@ class _AsyncWorkspaceWebhookEndpoints:
             request_options,
         )
 
+    async def update(self, endpoint_id: Union[str, int], *, url: str = NOT_GIVEN, description: Optional[str] = NOT_GIVEN, event_types: Optional[List[str]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+        """Update a webhook endpoint
+
+        Changes an endpoint's URL, description or event types in place; only the fields sent change. The endpoint keeps its signing secret, so receivers keep verifying deliveries. A new URL passes the same checks as on create: https only, no private hosts."""
+        return await self._client._call(
+            {"method": "patch", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": True, "names": {"url": "url", "description": "description", "event_types": "eventTypes"}},
+            {"endpointId": endpoint_id},
+            {"url": url, "description": description, "event_types": event_types},
+            request_options,
+        )
+
 
 class _AsyncWorkspace:
     def __init__(self, client: "AsyncClient") -> None:
@@ -1072,7 +1094,7 @@ class _AsyncWorkspace:
     async def usage(self, *, request_options: Optional[RequestOptions] = None) -> "WorkspaceUsage":
         """Get your plan's usage this period
 
-        How much of each meter the workspace used this period, with the plan's limit for it (null = unlimited). A period is a month from the workspace's billing date: its subscription's (an annual plan refills monthly from its start), else the day the workspace was created."""
+        How much of each meter the workspace used this period, with the plan's limit for it (null = unlimited). A period is a month from the workspace's billing date: its subscription's (an annual plan's counts reset monthly from its start), else the day the workspace was created."""
         return await self._client._call(
             {"method": "get", "path": "/workspace/usage", "query": [], "body": False, "names": {}},
             {},

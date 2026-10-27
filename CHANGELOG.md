@@ -2,6 +2,33 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc8 (2026-10-27)
+
+### Added
+
+- You can now change a webhook endpoint's URL, description or event types
+  without deleting it: `client.workspace.webhookEndpoints.update()`
+  (`PATCH /v1/workspace/webhook-endpoints/{endpointId}`). The endpoint
+  keeps its signing secret, so your verification code keeps working.
+
+### Changed
+
+- `guard()` and `reserve()` now answer within their time limit (`timeoutMs`
+  in TypeScript, `timeout` in Python; 1.5 seconds by default) even when
+  Limitry answers `moving` or `busy`. They retry those answers only while
+  the wait still fits, then apply the limit's fail mode. Before, they kept
+  retrying for up to 30 seconds, which could hold up your request. The
+  commit or release after your work gets the same limit: if it doesn't get
+  through, your work's result still comes back and that work goes
+  uncounted. Other SDK calls keep retrying `moving` and `busy` for up to 30
+  seconds.
+
+### Fixed
+
+- Usage history (`GET /v1/usage`) counts a reservation you commit for its
+  full amount as an allowed check. It used to count only commits for less
+  than the amount reserved, so the `allowed` totals were too low.
+
 ## 1.0.0rc7 (2026-10-22)
 
 ### Added
