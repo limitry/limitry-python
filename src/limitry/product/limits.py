@@ -21,6 +21,13 @@
 # mode decides, as in the TypeScript SDK: the last decision's fail mode
 # for this subject and action is remembered, and `closed` raises
 # `Unavailable` while `open`, the default, runs the block unmetered.
+# One exception, as in the TypeScript SDK: an `open` concurrent limit is
+# held to its amount in this process (design-fallback.md). `reserve`
+# counts the blocks it has going per subject and action, answered or not,
+# and remembers the smallest concurrent limit's `amount` from the last
+# decision; while Limitry can't answer, a reserve that would pass it
+# raises `Unavailable`. The count is this process's only: several servers
+# may together run more, bounded where it was unbounded.
 #
 # Retries are safe, and follow the TypeScript SDK's rule exactly: each
 # guard or reserve sends one Idempotency-Key, and a check is retried with
@@ -47,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -263,10 +271,51 @@ class _Budget:
 
 
 class _Memory:
-    """The last fail mode seen per subject + action (closed if any limit is)."""
+    """The last fail mode seen per subject + action (closed if any limit is);
+    the smallest concurrent limit's amount last seen, and the reserves this
+    client has going, answered or not (design-fallback.md)."""
 
     def __init__(self) -> None:
         self._seen: "OrderedDict[tuple, FailMode]" = OrderedDict()
+        self._amounts: "OrderedDict[tuple, int]" = OrderedDict()
+        self._running: Dict[tuple, int] = {}
+        self._lock = threading.Lock()
+
+    def start(self, subject: Subject, action: str) -> int:
+        """Counts a reserve as going; returns how many already were."""
+        key = (subject["kind"], subject["id"], action)
+        with self._lock:
+            before = self._running.get(key, 0)
+            self._running[key] = before + 1
+        return before
+
+    def finish(self, subject: Subject, action: str) -> None:
+        key = (subject["kind"], subject["id"], action)
+        with self._lock:
+            left = self._running.get(key, 1) - 1
+            if left > 0:
+                self._running[key] = left
+            else:
+                self._running.pop(key, None)
+
+    def held(self, subject: Subject, action: str, before: int) -> bool:
+        """An open concurrent limit's amount already reached in this process."""
+        amount = self._amounts.get((subject["kind"], subject["id"], action))
+        return amount is not None and before >= amount
+
+    def remember_amount(self, subject: Subject, action: str, decision: Dict[str, Any]) -> None:
+        key = (subject["kind"], subject["id"], action)
+        amounts = [
+            r["amount"]
+            for r in decision.get("limits") or []
+            if r.get("window") == "concurrent" and isinstance(r.get("amount"), int)
+        ]
+        if amounts:
+            self._amounts[key] = min(amounts)
+            if len(self._amounts) > _MEMORY:
+                self._amounts.popitem(last=False)
+        else:
+            self._amounts.pop(key, None)
 
     def mode(self, subject: Subject, action: str, forced: Optional[FailMode]) -> FailMode:
         return forced or self._seen.get((subject["kind"], subject["id"], action), "open")
@@ -395,12 +444,33 @@ class ProductMethods:
         reservation if the block raises. A concurrent limit's slot is taken
         exactly as long as the block runs."""
         memory = self._limits_memory()
+        before = memory.start(subject, action)
+        try:
+            with self._reserve(memory, before, subject, action, cost, shared, ttl_seconds, timeout, fail_mode) as r:
+                yield r
+        finally:
+            memory.finish(subject, action)
+
+    @contextmanager
+    def _reserve(
+        self,
+        memory: _Memory,
+        before: int,
+        subject: Subject,
+        action: str,
+        cost: float,
+        shared: Optional[List[Subject]],
+        ttl_seconds: Optional[int],
+        timeout: float,
+        fail_mode: Optional[FailMode],
+    ) -> Iterator[Reservation]:
         body = _check_body(subject, action, cost, shared, True, ttl_seconds)
         key = str(uuid.uuid4())
         decision = self._check(body, timeout, key)
         if decision is _UNREACHABLE or decision is _TIMED_OUT:
             timed_out = decision is _TIMED_OUT
-            if memory.mode(subject, action, fail_mode) == "closed":
+            # Open, but never past a concurrent limit's amount here.
+            if memory.mode(subject, action, fail_mode) == "closed" or memory.held(subject, action, before):
                 if timed_out:
                     self._release_unheard(body, key, timeout)
                 raise Unavailable()
@@ -410,6 +480,7 @@ class ProductMethods:
                 if timed_out:
                     self._release_unheard(body, key, timeout)
             return
+        memory.remember_amount(subject, action, decision)
         if not fail_mode:
             memory.remember(subject, action, decision)
         reservation = decision.get("reservation")
@@ -550,12 +621,33 @@ class AsyncProductMethods:
     ) -> AsyncIterator[AsyncReservation]:
         """Reserves `cost`, runs the block, then commits what it used — or releases on an error."""
         memory = self._limits_memory()
+        before = memory.start(subject, action)
+        try:
+            async with self._reserve(memory, before, subject, action, cost, shared, ttl_seconds, timeout, fail_mode) as r:
+                yield r
+        finally:
+            memory.finish(subject, action)
+
+    @asynccontextmanager
+    async def _reserve(
+        self,
+        memory: _Memory,
+        before: int,
+        subject: Subject,
+        action: str,
+        cost: float,
+        shared: Optional[List[Subject]],
+        ttl_seconds: Optional[int],
+        timeout: float,
+        fail_mode: Optional[FailMode],
+    ) -> AsyncIterator[AsyncReservation]:
         body = _check_body(subject, action, cost, shared, True, ttl_seconds)
         key = str(uuid.uuid4())
         decision = await self._check(body, timeout, key)
         if decision is _UNREACHABLE or decision is _TIMED_OUT:
             timed_out = decision is _TIMED_OUT
-            if memory.mode(subject, action, fail_mode) == "closed":
+            # Open, but never past a concurrent limit's amount here.
+            if memory.mode(subject, action, fail_mode) == "closed" or memory.held(subject, action, before):
                 if timed_out:
                     await self._release_unheard(body, key, timeout)
                 raise Unavailable()
@@ -565,6 +657,7 @@ class AsyncProductMethods:
                 if timed_out:
                     await self._release_unheard(body, key, timeout)
             return
+        memory.remember_amount(subject, action, decision)
         if not fail_mode:
             memory.remember(subject, action, decision)
         reservation = decision.get("reservation")

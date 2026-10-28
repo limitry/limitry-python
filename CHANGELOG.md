@@ -2,6 +2,19 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc9 (2026-10-27)
+
+### Changed
+
+- A `concurrent` limit with the fail mode `open` now still holds when
+  Limitry can't be reached. `reserve()` runs at most the limit's `amount`
+  at once for each subject and action in your process, and throws
+  `Unavailable` past it, as a `closed` limit would. Before, every run went
+  ahead unmetered. The count is per process, so several servers together
+  may still run more until Limitry answers again. Budgets and other
+  windows are unchanged: `open` lets the work run. Each limit in a
+  decision (`POST /v1/checks`) now also says its `amount`.
+
 ## 1.0.0rc8 (2026-10-27)
 
 ### Added

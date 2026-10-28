@@ -527,3 +527,129 @@ def test_a_commit_that_stays_busy_gives_up_within_the_timeout(sdk, monkeypatch):
     with limitry.reserve(subject=USER, action="a"):
         ran.append(True)
     assert ran == [True] and len(commits) == 2 and slept == [1.0]
+
+
+# An open concurrent limit is held to its amount in this process while
+# Limitry can't answer (design-fallback.md).
+def concurrent(amount):
+    return {
+        "allowed": True,
+        "limits": [
+            {"failMode": "open", "window": "concurrent", "amount": amount},
+            {"failMode": "open", "window": "day", "amount": 1000},
+        ],
+        "reservation": {"id": "res_1"},
+    }
+
+
+def _down_after_first(failure, first):
+    state = {"down": False}
+
+    def handler(request):
+        if not request.url.path.endswith("/checks"):
+            return httpx.Response(200, json={})
+        if state["down"]:
+            return failure(request)
+        return httpx.Response(200, json=first)
+
+    return state, handler
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _network_error,
+        _too_slow,
+        lambda r: httpx.Response(500),
+        lambda r: httpx.Response(402, json={"error": {"code": "plan_limit_reached"}}),
+    ],
+    ids=["network error", "timeout", "500", "402"],
+)
+def test_an_open_concurrent_limit_runs_at_most_its_amount_while_unreachable(sdk, no_waiting, failure):
+    state, handler = _down_after_first(failure, concurrent(2))
+    limitry, _ = api(sdk, handler)
+    with limitry.reserve(subject=USER, action="run"):
+        pass
+    state["down"] = True
+    ran = []
+    with limitry.reserve(subject=USER, action="run"):
+        ran.append(1)
+        with limitry.reserve(subject=USER, action="run"):
+            ran.append(2)
+            with pytest.raises(sdk.Unavailable):
+                with limitry.reserve(subject=USER, action="run"):
+                    ran.append(3)
+            # Another subject has its own count.
+            with limitry.reserve(subject={"kind": "user", "id": "u2"}, action="run"):
+                ran.append("u2")
+    assert ran == [1, 2, "u2"]
+    # Those finished: a slot is free again.
+    with limitry.reserve(subject=USER, action="run"):
+        ran.append(4)
+    assert ran[-1] == 4
+
+
+def test_runs_limitry_answered_count_too(sdk, no_waiting):
+    state, handler = _down_after_first(lambda r: httpx.Response(500), concurrent(2))
+    limitry, _ = api(sdk, handler)
+    with limitry.reserve(subject=USER, action="run"):
+        state["down"] = True
+        with limitry.reserve(subject=USER, action="run"):
+            with pytest.raises(sdk.Unavailable):
+                with limitry.reserve(subject=USER, action="run"):
+                    pass
+
+
+def test_nothing_remembered_or_no_concurrent_limit_runs_everything(sdk, no_waiting):
+    limitry, _ = api(sdk, lambda r: httpx.Response(500))
+    with limitry.reserve(subject=USER, action="run"):
+        with limitry.reserve(subject=USER, action="run"):
+            with limitry.reserve(subject=USER, action="run"):
+                pass
+    state, handler = _down_after_first(lambda r: httpx.Response(500), allowed(reservation={"id": "res_1"}))
+    limitry, _ = api(sdk, handler)
+    with limitry.reserve(subject=USER, action="run"):
+        pass
+    state["down"] = True
+    with limitry.reserve(subject=USER, action="run"):
+        with limitry.reserve(subject=USER, action="run"):
+            pass
+
+
+def test_guard_takes_no_slot(sdk, no_waiting):
+    state, handler = _down_after_first(lambda r: httpx.Response(500), concurrent(1))
+    limitry, _ = api(sdk, handler)
+    with limitry.reserve(subject=USER, action="run"):
+        pass
+    state["down"] = True
+    with limitry.guard(subject=USER, action="run"):
+        with limitry.guard(subject=USER, action="run"):
+            pass
+
+
+def test_async_an_open_concurrent_limit_runs_at_most_its_amount(sdk, no_waiting):
+    state, handler = _down_after_first(lambda r: httpx.Response(500), concurrent(2))
+    outcomes = []
+
+    async def run():
+        async with sdk.AsyncLimitry(
+            token="sk_test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        ) as limitry:
+            async with limitry.reserve(subject=USER, action="run"):
+                pass
+            state["down"] = True
+            gate = asyncio.Event()
+
+            async def one():
+                try:
+                    async with limitry.reserve(subject=USER, action="run"):
+                        outcomes.append("ran")
+                        await gate.wait()
+                except sdk.Unavailable:
+                    outcomes.append("unavailable")
+                    gate.set()
+
+            await asyncio.gather(one(), one(), one())
+
+    asyncio.run(run())
+    assert sorted(outcomes) == ["ran", "ran", "unavailable"]

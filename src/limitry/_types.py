@@ -284,6 +284,7 @@ class CheckLimit(TypedDict):
     window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]
     rolling: bool  # The limit counts the last window, not the calendar one.
     failMode: Literal["open", "closed"]  # What to do if Limitry cannot be reached next time: `open` allows, `closed` denies. SDKs remember it.
+    amount: int  # The limit's amount: units per window, or for a `concurrent` limit how many at once. SDKs hold an `op
     remaining: int
     resetsAt: Optional[str]  # When the window resets — for a rolling limit, when its oldest use leaves the window. Null when nothi
 
