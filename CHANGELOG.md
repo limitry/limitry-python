@@ -1,0 +1,273 @@
+# Changelog
+
+What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
+
+## 1.0.0rc10 (2026-11-07)
+
+### Added
+
+- Pass an API key as `apiKey` in TypeScript (`createClient({ apiKey })`)
+  or as `api_key` in Python. Keep `token` for a personal access token.
+  Code that passes an API key as `token` still works.
+
+  Without either, the client reads your API key's environment variable,
+  as before. If that isn't set, it now reads the personal access token
+  variable the CLI uses.
+
+### Changed
+
+- An approval request (`POST /v1/workspace/approval-requests`) now runs in
+  the environment it was filed in once a person approves it, such as live
+  when you asked from live. Before, it ran in the default environment
+  unless its input named one. Requests filed before this change still
+  run in the default.
+- The descriptions of every method and command are rewritten to be easier
+  to read: one rule per sentence, with nothing about how calls behave
+  changed. They now also say that only workspace owners can manage webhook
+  endpoints with a personal access token.
+  Every response in the API reference now comes with an example of what
+  it returns.
+- The descriptions of the limits, subjects, checks, reservations and usage
+  methods are rewritten in plain sentences, with nothing about how calls
+  behave changed. Every field these methods return now has an example in
+  the API reference.
+- A few error messages now read as separate sentences: what went wrong,
+  then what to do. Their codes and status are unchanged.
+- Error messages and CLI output read as whole sentences: what went wrong,
+  then what to do. For example, an unknown environment now says
+  `Unknown environment "staging". This product's environments are test, live.`
+  Error codes are unchanged, so code that checks `error.code` keeps
+  working. Code that matches the exact text of a message may need
+  updating.
+- Path parameters such as `endpointId` and `deliveryId` now come with a
+  description ("The endpoint's ID.") in the SDKs' type hints, the
+  command line's help and the API reference.
+- The API reference's "Too many requests" answer now gives the limit: 100
+  requests a minute for each credential, whether an API key, a personal
+  access token or an agent's sign-in. Wait the number of seconds in the
+  `Retry-After` header before trying again.
+- `POST /v1/checks` now caps refused checks per API key. Past about 17 refused
+  checks a second in one location, repeating a check that was just refused gets
+  the same `allowed: false` answer for up to 5 seconds, with the header
+  `limitry-refusal: repeated`. Past about 100 a second, the key's checks answer
+  `429 rate_limited` for 10 seconds, and each limit's fail mode decides. Allowed
+  checks, commits, releases and extends aren't affected.
+- API keys and webhooks now live together under **Settings → Developers**
+  in the app, and the descriptions of the API key and webhook endpoint
+  operations point there.
+- `GET /v1/workspace/usage` returns its list as `counts` instead of `meters`.
+  Update anything that reads `meters` from `client.workspace.usage.get()`, the
+  Python client or the CLI's output.
+
+### Fixed
+
+- The API's descriptions, shown in the SDKs' hints and the CLI's help, now
+  state the real limits: `GET /v1/usage/subjects` returns at most 50
+  subjects (25 for a concurrent limit), a usage series spans at most 2,000
+  buckets, a check's idempotency answer lasts an hour, a late commit still
+  counts within 24 hours, and a test key's checks have no plan grace.
+
+## 1.0.0rc9 (2026-10-27)
+
+### Changed
+
+- A `concurrent` limit with the fail mode `open` now still holds when
+  Limitry can't be reached. `reserve()` runs at most the limit's `amount`
+  at once for each subject and action in your process, and throws
+  `Unavailable` past it, as a `closed` limit would. Before, every run went
+  ahead unmetered. The count is per process, so several servers together
+  may still run more until Limitry answers again. Budgets and other
+  windows are unchanged: `open` lets the work run. Each limit in a
+  decision (`POST /v1/checks`) now also says its `amount`.
+
+## 1.0.0rc8 (2026-10-27)
+
+### Added
+
+- You can now change a webhook endpoint's URL, description or event types
+  without deleting it: `client.workspace.webhookEndpoints.update()`
+  (`PATCH /v1/workspace/webhook-endpoints/{endpointId}`). The endpoint
+  keeps its signing secret, so your verification code keeps working.
+
+### Changed
+
+- `guard()` and `reserve()` now answer within their time limit (`timeoutMs`
+  in TypeScript, `timeout` in Python; 1.5 seconds by default) even when
+  Limitry answers `moving` or `busy`. They retry those answers only while
+  the wait still fits, then apply the limit's fail mode. Before, they kept
+  retrying for up to 30 seconds, which could hold up your request. The
+  commit or release after your work gets the same limit: if it doesn't get
+  through, your work's result still comes back and that work goes
+  uncounted. Other SDK calls keep retrying `moving` and `busy` for up to 30
+  seconds.
+
+### Fixed
+
+- Usage history (`GET /v1/usage`) counts a reservation you commit for its
+  full amount as an allowed check. It used to count only commits for less
+  than the amount reserved, so the `allowed` totals were too low.
+
+## 1.0.0rc7 (2026-10-22)
+
+### Added
+
+- `POST /v1/checks` can now answer `503` with the code `busy` when
+  Limitry is deciding too many checks for those subjects at once. Nothing
+  was charged. `guard` and `reserve` (TypeScript and Python) send the
+  check again with the same key, within the same 30 seconds they give
+  `moving`, before the limit's fail mode decides. Each retry of `busy` or
+  `moving` now waits the answer's `Retry-After` plus a random backoff that
+  grows with each try, so clients don't all come back at the same moment.
+  Older SDK versions treat `busy` as Limitry being unreachable after their
+  usual two quick retries, so the fail mode decides; upgrade to retry it.
+
+### Changed
+
+- A very busy workspace's counts are now spread over more of Limitry's
+  servers as its traffic grows. While some of them move, which takes a few
+  seconds, checks, commits and releases on those subjects answer `503`
+  with the new error code `moving` and `Retry-After: 1`; nothing is
+  counted. `guard` and `reserve` (TypeScript and Python) and the CLI send
+  the same request again with the same Idempotency-Key for up to 30
+  seconds, each try with its own time budget, before a limit's fail mode
+  applies, so work is neither run uncounted nor left uncommitted.
+
+### Fixed
+
+- A reservation (`mode: "reserve"`) now starts a subject's period, as a
+  plain check does: on a `billing_date` limit with no billing date set
+  yet, the first reservation's time becomes the subject's billing date,
+  and on a `first_use` limit it starts the period. Before, reservations
+  made before the subject's first commit could each count in a period of
+  their own, so a monthly limit could let more through than its amount.
+  A reservation you release still starts the period, with nothing used in
+  it.
+- A `503 moving` answer with `Retry-After: 0` is now retried after at least
+  a second, not at once, and still for at most 30 seconds. A client made
+  with `maxRetries: 0` no longer sends the SDK's internal
+  `x-limitry-moving` header to the API.
+
+## 1.0.0rc6 (2026-10-21)
+
+### Added
+
+- Limits have `counting`: `fast` answers the instant it decides, and
+  `guaranteed` stores every count safely before answering, so the limit
+  never goes over, even if a server fails. A `total` balance defaults to
+  `guaranteed`, every other window to `fast`. Set it when creating or
+  updating a limit (`counting`, `--counting`), or in `limitry.json`.
+
+### Changed
+
+- - Creating a limit needs only who it is for, the amount and the window:
+    `limits.create({ subject: { kind: "user" }, amount: 100, window: "month" })`
+    (`limitry limits create --subject '{"kind":"user"}' --amount 100 --window month`).
+    `action` defaults to every action (`*`), `unit` to `units`, and `name`
+    to the sentence the limit reads as, such as "100 units per user per
+    month". If a limit already has that name, the API answers `409`: give
+    this one a `name`. `limitry.json` entries still need a `name`.
+  - A limit's input names who it is for as `subject: { kind, id }` (was
+    `subjectKind` and `subjectId`), the same shape the limit itself has.
+  - What a limit counts is fixed once it is created: its subject, action,
+    unit, window, `every`, `start` and `rolling`. Changing one answers
+    `400 invalid_request`: create a new limit and archive the old one (its
+    history stays). Name, amount, fail mode and enabled still change any
+    time. `limitry sync` refuses such a change until you rename the entry.
+  - A limit says when a check last reached it (`lastCheckedAt`), so you can
+    see a limit no check names.
+- One name for each idea, everywhere: the API, both SDKs, the CLI, the MCP
+  tools, `limitry.json` and webhooks. Update your code when you upgrade:
+
+  - `hold()` is `reserve()`: it takes `cost` (was `estimate`), and the block
+    gets a `Reservation` (was `Held`; Python `Reservation` and
+    `AsyncReservation`), with the same `cost()` and `extend()`.
+  - A refusal throws `LimitReached` (was `LimitExceeded`), with `limitId`
+    (Python `limit_id`) and `reason` `limit_reached` or
+    `too_many_reservations`. When Limitry can't be reached and a limit fails
+    closed, you now get a separate `Unavailable` error. "Can't be reached"
+    also covers a `402 plan_limit_reached` and a `429` from Limitry's flood
+    guard, so each limit's fail mode decides instead of your code getting an
+    error.
+  - A check's answer lists its limits in `limits` (was `remaining`): read
+    `decision.limits[0].remaining`. Every answer that names a limit says
+    `limitId`: `reason.limitId`, `limits[].limitId`, `usage.standing`'s
+    `limits[].limitId`, and webhook payloads.
+  - The refusal code is `limit_reached` (was `limit_exceeded`), and the
+    webhook event is `limit.reached` (was `limit.exceeded`): subscribe your
+    endpoints to the new name.
+  - Usage says `refused` (was `denied`); `usage.subjects` no longer has
+    `over` (it is `refused > 0`).
+  - Credits: `limits.credits.create()` and `limits.credits.list()` at
+    `/v1/limits/{limitId}/credits` (were `limits.grants.*` at `…/grants`),
+    ids start `crd_` (were `grt_`), and the approval an agent asks for is
+    `limit.credit` (was `limit.grant`).
+  - A period that starts on the subject's billing date is
+    `start: "billing_date"` (was `"anchor"`), and `subjects.update()` takes
+    `billingDate` (was `anchor`); the subject says `billingDate` too.
+  - `usage.standing()` and `usage.query()` take one `subject`, written
+    `kind:id` (`user:usr_123`), instead of separate kind and id fields
+    (`limitry usage standing --subject user:usr_123`).
+  - A limit's id starts `lmt_` (was `lim_`); keys still start `lim_test_`
+    and `lim_live_`.
+  - `limitry sync --preview` (was `--dry-run`), and the API's `preview`
+    (was `dryRun`), in what you send and what comes back.
+
+### Removed
+
+- Limits no longer have `counting` (Fast or Guaranteed), and the CLI no
+  longer has `--counting`: every count is now saved before Limitry answers,
+  for every limit. Remove `counting` from your code and from
+  `limitry.json`; Limitry ignores it.
+
+## 1.0.0rc5 (2026-10-19)
+
+### Added
+
+- A refused check's `reason` has a `message`: the refusal in one sentence,
+  such as "Refused by AI budget: 3 cents left, resets
+  2026-11-01T00:00:00.000Z. Try again in 3600 s." `LimitExceeded` and
+  `limitry check` show it as the API writes it, so every client says the
+  same. Branch on `allowed` and `reason.code`, never on the message.
+
+### Fixed
+
+- - `held.cost()` refuses a cost the API can't commit (not a whole number
+    from 0 to 1,000,000,000): TypeScript throws `RangeError`, Python raises
+    `ValueError`, in your code. Before, the commit failed silently after
+    the work and its usage was never counted.
+  - TypeScript's `held.extend()` throws the API's error, such as for an
+    expired hold, as Python's already did. Both send the `ttlSeconds` you
+    give as it is, so `0` is refused rather than read as the default.
+  - Python checks, commits and releases now retry exactly as TypeScript's
+    do: a network error, `408`, `429` or `5xx`, at most twice, all within
+    the check's `timeout` (1.5 s) or 5 s for a settle. `standing()` retries
+    too, and reports an error answer that isn't JSON.
+  - `limitry check` and `limitry sync` refuse `--workspace` with an API key,
+    as every other command does, instead of ignoring it.
+
+## 1.0.0rc4 (2026-10-19)
+
+### Changed
+
+- `LimitExceeded` says which limit refused, by name, and when to try
+  again: "Refused by AI replies per day: 0 replies left, resets
+  2026-10-20T00:00:00.000Z. Try again in 60 s." It used to show only the
+  limit's id. `error.limit` (`limit` in Python) is still the id.
+
+## 1.0.0rc3 (2026-10-16)
+
+No user-facing changes.
+
+## 1.0.0rc2 (2026-10-16)
+
+### Added
+
+- Each release comes with a `CHANGELOG.md` listing what changed, newest first.
+
+### Changed
+
+- The package page (README, on GitHub, npm and PyPI) shows what the product does with a first real example, and links the guide, the API reference, the changelog and support.
+
+## 1.0.0rc1 (2026-10-16)
+
+No user-facing changes.
