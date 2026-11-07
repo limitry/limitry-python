@@ -42,14 +42,14 @@ class _LimitsCredits:
             request_options,
         )
 
-    def list(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    def list(self, limit_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CreditPage":
         """List a balance's credits
 
-        Lists the credits added to subjects' balances on this limit, including any taken back. It returns the newest 200, newest first."""
+        Lists the credits added to subjects' balances on this limit, including any taken back, newest first. Page through them with the opaque `nextCursor`. `before` starts from a moment, and `subjectId` keeps one subject's credits."""
         return self._client._call(
-            {"method": "get", "path": "/limits/{limitId}/credits", "query": [], "body": False, "names": {}},
+            {"method": "get", "path": "/limits/{limitId}/credits", "query": ["limit", "cursor", "before", "subjectId"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "subject_id": "subjectId"}},
             {"limitId": limit_id},
-            {},
+            {"limit": limit, "cursor": cursor, "before": before, "subject_id": subject_id},
             request_options,
         )
 
@@ -336,14 +336,14 @@ class _WorkspaceAuditEvents:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "AuditEventPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, action: str = NOT_GIVEN, actor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "AuditEventPage":
         """List workspace audit events
 
-        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. With a personal access token, only workspace owners can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself."""
+        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. `before` starts from a moment. `action` keeps one kind of event, and `actor` what one person, key or token did. With a personal access token, only workspace owners can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself."""
         return self._client._call(
-            {"method": "get", "path": "/workspace/audit-events", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
+            {"method": "get", "path": "/workspace/audit-events", "query": ["limit", "cursor", "before", "action", "actor"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "action": "action", "actor": "actor"}},
             {},
-            {"limit": limit, "cursor": cursor},
+            {"limit": limit, "cursor": cursor, "before": before, "action": action, "actor": actor},
             request_options,
         )
 
@@ -416,14 +416,14 @@ class _WorkspaceWebhookDeliveries:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryPage":
+    def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, status: Literal["pending", "delivered", "failed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryPage":
         """List an endpoint's deliveries
 
-        Lists one endpoint's delivery history, newest first. Each entry shows the event's status, attempts and last HTTP status. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. With a personal access token, only workspace owners can call this. A workspace API key with this scope can."""
+        Lists one endpoint's delivery history, newest first. Each entry shows the event's status, attempts and last HTTP status. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. `before` starts from a moment, and `status` keeps one kind of delivery. With a personal access token, only workspace owners can call this. A workspace API key with this scope can."""
         return self._client._call(
-            {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
+            {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries", "query": ["limit", "cursor", "before", "status"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "status": "status"}},
             {"endpointId": endpoint_id},
-            {"limit": limit, "cursor": cursor},
+            {"limit": limit, "cursor": cursor, "before": before, "status": status},
             request_options,
         )
 
@@ -588,14 +588,14 @@ class _AsyncLimitsCredits:
             request_options,
         )
 
-    async def list(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    async def list(self, limit_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CreditPage":
         """List a balance's credits
 
-        Lists the credits added to subjects' balances on this limit, including any taken back. It returns the newest 200, newest first."""
+        Lists the credits added to subjects' balances on this limit, including any taken back, newest first. Page through them with the opaque `nextCursor`. `before` starts from a moment, and `subjectId` keeps one subject's credits."""
         return await self._client._call(
-            {"method": "get", "path": "/limits/{limitId}/credits", "query": [], "body": False, "names": {}},
+            {"method": "get", "path": "/limits/{limitId}/credits", "query": ["limit", "cursor", "before", "subjectId"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "subject_id": "subjectId"}},
             {"limitId": limit_id},
-            {},
+            {"limit": limit, "cursor": cursor, "before": before, "subject_id": subject_id},
             request_options,
         )
 
@@ -882,14 +882,14 @@ class _AsyncWorkspaceAuditEvents:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "AuditEventPage":
+    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, action: str = NOT_GIVEN, actor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "AuditEventPage":
         """List workspace audit events
 
-        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. With a personal access token, only workspace owners can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself."""
+        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. `before` starts from a moment. `action` keeps one kind of event, and `actor` what one person, key or token did. With a personal access token, only workspace owners can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself."""
         return await self._client._call(
-            {"method": "get", "path": "/workspace/audit-events", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
+            {"method": "get", "path": "/workspace/audit-events", "query": ["limit", "cursor", "before", "action", "actor"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "action": "action", "actor": "actor"}},
             {},
-            {"limit": limit, "cursor": cursor},
+            {"limit": limit, "cursor": cursor, "before": before, "action": action, "actor": actor},
             request_options,
         )
 
@@ -962,14 +962,14 @@ class _AsyncWorkspaceWebhookDeliveries:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryPage":
+    async def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, status: Literal["pending", "delivered", "failed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryPage":
         """List an endpoint's deliveries
 
-        Lists one endpoint's delivery history, newest first. Each entry shows the event's status, attempts and last HTTP status. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. With a personal access token, only workspace owners can call this. A workspace API key with this scope can."""
+        Lists one endpoint's delivery history, newest first. Each entry shows the event's status, attempts and last HTTP status. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. `before` starts from a moment, and `status` keeps one kind of delivery. With a personal access token, only workspace owners can call this. A workspace API key with this scope can."""
         return await self._client._call(
-            {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
+            {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries", "query": ["limit", "cursor", "before", "status"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "status": "status"}},
             {"endpointId": endpoint_id},
-            {"limit": limit, "cursor": cursor},
+            {"limit": limit, "cursor": cursor, "before": before, "status": status},
             request_options,
         )
 

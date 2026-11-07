@@ -10,8 +10,9 @@ Limitry is the limits, credits and budgets layer for the software you build: giv
 pip install limitry
 ```
 
-Needs Python 3.10 or later. Set `LIMITRY_API_KEY` to a key from **API
-keys** in the app. Use a test key (`lim_test_…`) while you build.
+Needs Python 3.10 or later. Set `LIMITRY_API_KEY` to a key from
+**Settings → Developers** in the app. Use a test key (`lim_test_…`)
+while you build. To pass the key yourself, use `Limitry(api_key=key)`.
 
 ## Guard costly work
 

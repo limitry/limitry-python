@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
-__all__ = ["UserMe","ErrorEnvelope","Workspace","AuditEventPage","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalRequest","WorkspaceUsage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookEndpointCreated","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","LimitPage","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatch","LimitSyncResult","LimitSyncInput","LimitSyncEntry","Credit","CreditInput","CheckDecision","CheckLimit","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","UsageStanding","UsageBySubject","UsageSeries","Subject","SubjectRef","SubjectUpdate","SubjectResetResult","SubjectReset"]
+__all__ = ["UserMe","ErrorEnvelope","Workspace","AuditEventPage","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalRequest","WorkspaceUsage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookEndpointCreated","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","LimitPage","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatch","LimitSyncResult","LimitSyncInput","LimitSyncEntry","CreditPage","Credit","CreditInput","CheckDecision","CheckLimit","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","UsageStanding","UsageBySubject","UsageSeries","Subject","SubjectRef","SubjectUpdate","SubjectResetResult","SubjectReset"]
 
 
 class UserMe(TypedDict):
@@ -34,6 +34,7 @@ class AuditEvent(TypedDict):
     id: str
     action: str
     actorType: str  # Who is accountable: `user`, `staff`, `system` or `api_key`.
+    actor: Dict[str, Any]  # Who acted.
     credential: Optional[Dict[str, Any]]  # The API credential the action came through, with the name it had at the time. Null for actions taken
     createdAt: str
 
@@ -244,6 +245,11 @@ class LimitSyncInput(_LimitSyncInputRequired, total=False):
 
 class LimitSyncEntry(TypedDict):
     pass
+
+
+class CreditPage(TypedDict):
+    items: List["Credit"]
+    nextCursor: Optional[str]  # Pass as ?cursor= to fetch the next page.
 
 
 class Credit(TypedDict):

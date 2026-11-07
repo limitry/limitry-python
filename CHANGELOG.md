@@ -2,6 +2,29 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc11 (2026-11-07)
+
+### Added
+
+- Lists can start from a date. `GET /v1/workspace/audit-events` and
+  `GET /v1/workspace/webhook-endpoints/{endpointId}/deliveries` take
+  `before`, an ISO time, and return the items older than it, newest first.
+
+  Audit events take two filters. `action` keeps one kind of event.
+  `actor` keeps what one person, key or token did: pass `user:` and an
+  item's `actor.id`, or `credential:` and its `credential.id`. Each audit
+  event now carries those ids.
+
+  Webhook deliveries take `status`: `pending`, `delivered` or `failed`.
+
+### Changed
+
+- `limitry.limits.credits.list()` and `limitry limits credits list` now page
+  like every other list (`GET /v1/limits/{limitId}/credits`). They return
+  one page of credits and a `nextCursor`, and take `limit`, `cursor` and
+  `before`. `subjectId` keeps one subject's credits. The list no longer
+  stops at the newest 200.
+
 ## 1.0.0rc10 (2026-11-07)
 
 ### Added
