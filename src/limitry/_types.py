@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
-__all__ = ["UserMe","ErrorEnvelope","Workspace","AuditEventPage","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalRequest","WorkspaceUsage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookEndpointCreated","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","LimitPage","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatch","LimitSyncResult","LimitSyncInput","LimitSyncEntry","CreditPage","Credit","CreditInput","CheckDecision","CheckLimit","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","UsageStanding","UsageBySubject","UsageSeries","Subject","SubjectRef","SubjectUpdate","SubjectResetResult","SubjectReset"]
+__all__ = ["UserMe","ErrorEnvelope","Workspace","AuditEventPage","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalRequest","WorkspaceUsage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookEndpointCreated","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","LimitPage","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatch","LimitSyncResult","LimitSyncInput","LimitSyncEntry","CreditPage","Credit","CreditInput","CheckDecision","CheckLimit","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","UsageStanding","UsageBySubject","UsageSeries","UsageTotal","UsageOverview","Subject","SubjectRef","SubjectUpdate","SubjectResetResult","SubjectReset"]
 
 
 class UserMe(TypedDict):
@@ -50,6 +50,7 @@ class Member(TypedDict):
     name: str
     email: str
     role: str  # `owner`, `admin`, `member` or `guest`.
+    seat: Optional[str]  # The seat type the member holds, where the product has seat types: it decides what they do here. Null
     joinedAt: str
 
 
@@ -62,6 +63,7 @@ class Invitation(TypedDict):
     id: str
     email: str
     role: Optional[str]
+    seat: Optional[str]  # The seat type the person will hold on accepting. Null for a guest, or where the product has no seat 
     teamIds: List[str]  # The teams the person joins on accepting. Everyone except a guest also joins the default team.
     expiresAt: str
     createdAt: str
@@ -175,7 +177,6 @@ class Limit(TypedDict):
     enabled: bool  # Whether checks enforce the limit.
     archivedAt: Optional[str]  # When you archived the limit, or null while it's active. Checks don't enforce an archived limit, but 
     failMode: Literal["open", "closed"]  # What your code should do when it can't reach Limitry. `open` allows and `closed` refuses.
-    version: int  # A number that goes up with every change to the limit.
     lastCheckedAt: Optional[str]  # The hour a check last reached this limit, or null if none has. It comes from usage history, so it ca
     createdAt: str
     updatedAt: str
@@ -337,14 +338,33 @@ class UsageStanding(TypedDict):
 
 class UsageBySubject(TypedDict):
     limitId: str
-    windowStart: str  # When the current window started.
+    limitName: str
+    unit: str  # What the limit counts in, such as `cents` or `requests`.
+    amount: int  # How much each subject may use per window.
+    window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"]
+    windowStart: str  # When the current window started, or the start of the range you asked for.
+    resetsAt: Optional[str]  # When the current window ends, for a calendar window every subject shares. Null for a past range, a b
+    range: Optional[Dict[str, Any]]  # The past range the list covers, or null for the current window. Its start is the plan's history limi
     items: List[Dict[str, Any]]
 
 
-class UsageSeries(TypedDict):
-    limitId: str
-    granularity: Literal["hour", "day"]
-    points: List[Dict[str, Any]]
+_UsageSeriesRequired = TypedDict("_UsageSeriesRequired", {"limitId": str, "limitName": str, "unit": str, "amount": int, "window": Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], "granularity": Literal["hour", "day"], "from": str, "to": str, "total": "UsageTotal", "points": List[Dict[str, Any]]})
+_UsageSeriesOptional = TypedDict("_UsageSeriesOptional", {}, total=False)
+
+
+class UsageSeries(_UsageSeriesRequired, _UsageSeriesOptional):
+    pass
+
+
+class UsageTotal(TypedDict):
+    used: int  # The units used in the range.
+    allowed: int  # The checks allowed in the range.
+    refused: int  # The checks refused in the range.
+
+
+class UsageOverview(TypedDict):
+    range: Optional[Dict[str, Any]]  # The past range the answer covers, or null for each limit's current window. Its start is the plan's h
+    limits: List[Dict[str, Any]]
 
 
 class Subject(TypedDict):

@@ -2,6 +2,60 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc12 (2026-11-09)
+
+### Added
+
+- Members and pending invitations now carry `seat`: the seat type a person
+  holds or will hold (`GET /v1/workspace/members`,
+  `GET /v1/workspace/invitations`). It is null for a guest, or where the
+  product has no seat types.
+- `GET /v1/usage` and `GET /v1/usage/subjects` take a limit by its name, as
+  `limitName`, as well as by `limitId`. They also take a `period`, such as
+  `last_month` or `this_week`, instead of `from` and `to`.
+
+  `GET /v1/usage` returns the range's `total` (`used`, `allowed` and
+  `refused`) beside its buckets, and the range it covers as `from` and `to`.
+
+  `GET /v1/usage/subjects` lists who used a limit most in a past period when
+  you send `period`, or `from` and `to`. In that list, `remaining` is null.
+  Add `sort` as `refused` to list the most refused first. It also says when
+  the current window ends, as `resetsAt`.
+
+  Both responses include the limit's `limitName`, `unit`, `amount` and
+  `window`.
+
+  In the SDKs, `remaining` on `client.usage.subjects()` items is now typed
+  as a number or null, so check for null before using it. In the CLI, use
+  `--limit-name`, `--period` and `--sort`.
+
+  `GET /v1/usage/overview` is new: every active limit's usage in one answer,
+  with each limit's unit, amount, window, `total` and top subjects. It covers
+  each limit's current window, or a `period` or range you send. With `sort`
+  as `refused`, each limit lists only the subjects it refused. A balance
+  also lists the credits added to it and taken back in the range. In the SDKs
+  it's `client.usage.overview()`, and in the CLI `limitry usage overview`.
+
+  Every call about one limit takes the limit's name in place of its ID:
+  `GET`, `PATCH`, archive and restore on `/v1/limits/{limitId}`, and listing
+  and adding its credits. So does the `limit.credit` approval. A name
+  matches exactly, or else ignoring case. When two limits match ignoring
+  case, the call fails with a 400 that names both.
+
+### Changed
+
+- A personal access token changes limits, subjects and credits only on its
+  person's side. An admin in a Developer seat changes test, and an admin in
+  an Operator seat changes live. The owner changes both. A change on the
+  other side returns 403 `forbidden`, and the message names who may make it.
+  Workspace API keys are not affected.
+
+### Removed
+
+- A limit no longer has a `version` field (`GET /v1/limits`,
+  `GET /v1/limits/{limitId}` and every response that returns a limit). Use
+  `updatedAt` to tell whether a limit has changed.
+
 ## 1.0.0rc11 (2026-11-07)
 
 ### Added
