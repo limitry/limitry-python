@@ -34,7 +34,7 @@ class _LimitsCredits:
     def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Credit":
         """Add credits to a balance
 
-        Adds `amount` credits to one subject's balance, on a limit whose window is `total`. A negative `amount` takes credits back, such as after a refund or a chargeback, and needs a `note` saying why. The balance can go below zero, and Limitry then refuses checks until you add more credits. Owners, admins and workspace API keys can add credits. An agent asks a person instead, through the `limit.credit` approval. Limitry keeps a credit's `Idempotency-Key` forever, so never reuse one for a new credit."""
+        Adds `amount` credits to one subject's balance, on a limit whose window is `total`. A negative `amount` takes credits back, such as after a refund or a chargeback, and needs a `note` saying why. The balance can go below zero, and Limitry then refuses checks until you add more credits. Owners, admins and workspace API keys can add credits. An agent connected through MCP asks a person instead, through the `limit.credit` approval. Limitry keeps a credit's `Idempotency-Key` forever, so never reuse one for a new credit."""
         return self._client._call(
             {"method": "post", "path": "/limits/{limitId}/credits", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
             {"limitId": limit_id},
@@ -220,7 +220,7 @@ class _Usage:
     def overview(self, *, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: Optional[int] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageOverview":
         """Get every limit's usage at once
 
-        Returns every active limit's usage in one answer, for a question that names no limit. Each limit comes with its name, unit, amount and window, its `total` (units used, checks allowed and refused) and its top subjects. By default, it covers each limit's current window, with exact amounts. For a past range, send `period`, such as `last_month`, or `from` and `to`. The totals and subjects then come from history, and each subject's `remaining` is null. Set `sort` to `refused` to list only the subjects each limit refused, the most refused first. A balance also lists the credits added to it in the range. Usage older than your plan's history isn't returned."""
+        Returns every active limit's usage in one answer, for a question that names no limit. Each limit comes with its name, unit, amount and window, its `total` (units used, checks allowed and refused) and its top subjects. By default, it covers each limit's current window, with exact amounts. For a past range, send `period`, such as `last_month`, or `from` and `to`. The totals and subjects then come from history, and each subject's `remaining` is null. Set `sort` to `refused` to list only the subjects each limit refused, the most refused first. A balance also lists the credits added to it in the range. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
         return self._client._call(
             {"method": "get", "path": "/usage/overview", "query": ["period", "from", "to", "sort", "top"], "body": False, "names": {"period": "period", "from_": "from", "to": "to", "sort": "sort", "top": "top"}},
             {},
@@ -253,7 +253,7 @@ class _Usage:
     def subjects(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, limit: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageBySubject":
         """List who is using a limit
 
-        Lists a limit's subjects in its current window, most used first. Each one shows the units used, what's left and how many checks the limit refused. The amounts are exact, but a subject first checked in the last minute may not appear yet. For a `concurrent` limit, it lists the slots each subject holds now, among the subjects checked in the last hour. Name the limit by `limitId` or `limitName`. For a past range, send `period`, such as `last_month`, or `from` and `to`. The subjects are then ranked by their use in that range, from history. Each one's `remaining` is then null. Set `sort` to `refused` to list the most refused first. Usage older than your plan's history isn't returned."""
+        Lists a limit's subjects in its current window, most used first. Each one shows the units used, what's left and how many checks the limit refused. The amounts are exact, but a subject first checked in the last minute may not appear yet. For a `concurrent` limit, it lists the slots each subject holds now, among the subjects checked in the last hour. Name the limit by `limitId` or `limitName`. For a past range, send `period`, such as `last_month`, or `from` and `to`. The subjects are then ranked by their use in that range, from history. Each one's `remaining` is then null. Set `sort` to `refused` to list the most refused first. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
         return self._client._call(
             {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limitName", "period", "from", "to", "sort", "limit"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "period": "period", "from_": "from", "to": "to", "sort": "sort", "limit": "limit"}},
             {},
@@ -559,7 +559,7 @@ class _Workspace:
     def usage(self, *, request_options: Optional[RequestOptions] = None) -> "WorkspaceUsage":
         """Get your plan's usage this period
 
-        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
+        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. Each entry also says where it stands and where we start refusing new use. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
         return self._client._call(
             {"method": "get", "path": "/workspace/usage", "query": [], "body": False, "names": {}},
             {},
@@ -591,7 +591,7 @@ class _AsyncLimitsCredits:
     async def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Credit":
         """Add credits to a balance
 
-        Adds `amount` credits to one subject's balance, on a limit whose window is `total`. A negative `amount` takes credits back, such as after a refund or a chargeback, and needs a `note` saying why. The balance can go below zero, and Limitry then refuses checks until you add more credits. Owners, admins and workspace API keys can add credits. An agent asks a person instead, through the `limit.credit` approval. Limitry keeps a credit's `Idempotency-Key` forever, so never reuse one for a new credit."""
+        Adds `amount` credits to one subject's balance, on a limit whose window is `total`. A negative `amount` takes credits back, such as after a refund or a chargeback, and needs a `note` saying why. The balance can go below zero, and Limitry then refuses checks until you add more credits. Owners, admins and workspace API keys can add credits. An agent connected through MCP asks a person instead, through the `limit.credit` approval. Limitry keeps a credit's `Idempotency-Key` forever, so never reuse one for a new credit."""
         return await self._client._call(
             {"method": "post", "path": "/limits/{limitId}/credits", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
             {"limitId": limit_id},
@@ -777,7 +777,7 @@ class _AsyncUsage:
     async def overview(self, *, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: Optional[int] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageOverview":
         """Get every limit's usage at once
 
-        Returns every active limit's usage in one answer, for a question that names no limit. Each limit comes with its name, unit, amount and window, its `total` (units used, checks allowed and refused) and its top subjects. By default, it covers each limit's current window, with exact amounts. For a past range, send `period`, such as `last_month`, or `from` and `to`. The totals and subjects then come from history, and each subject's `remaining` is null. Set `sort` to `refused` to list only the subjects each limit refused, the most refused first. A balance also lists the credits added to it in the range. Usage older than your plan's history isn't returned."""
+        Returns every active limit's usage in one answer, for a question that names no limit. Each limit comes with its name, unit, amount and window, its `total` (units used, checks allowed and refused) and its top subjects. By default, it covers each limit's current window, with exact amounts. For a past range, send `period`, such as `last_month`, or `from` and `to`. The totals and subjects then come from history, and each subject's `remaining` is null. Set `sort` to `refused` to list only the subjects each limit refused, the most refused first. A balance also lists the credits added to it in the range. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
         return await self._client._call(
             {"method": "get", "path": "/usage/overview", "query": ["period", "from", "to", "sort", "top"], "body": False, "names": {"period": "period", "from_": "from", "to": "to", "sort": "sort", "top": "top"}},
             {},
@@ -810,7 +810,7 @@ class _AsyncUsage:
     async def subjects(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, limit: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageBySubject":
         """List who is using a limit
 
-        Lists a limit's subjects in its current window, most used first. Each one shows the units used, what's left and how many checks the limit refused. The amounts are exact, but a subject first checked in the last minute may not appear yet. For a `concurrent` limit, it lists the slots each subject holds now, among the subjects checked in the last hour. Name the limit by `limitId` or `limitName`. For a past range, send `period`, such as `last_month`, or `from` and `to`. The subjects are then ranked by their use in that range, from history. Each one's `remaining` is then null. Set `sort` to `refused` to list the most refused first. Usage older than your plan's history isn't returned."""
+        Lists a limit's subjects in its current window, most used first. Each one shows the units used, what's left and how many checks the limit refused. The amounts are exact, but a subject first checked in the last minute may not appear yet. For a `concurrent` limit, it lists the slots each subject holds now, among the subjects checked in the last hour. Name the limit by `limitId` or `limitName`. For a past range, send `period`, such as `last_month`, or `from` and `to`. The subjects are then ranked by their use in that range, from history. Each one's `remaining` is then null. Set `sort` to `refused` to list the most refused first. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
         return await self._client._call(
             {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limitName", "period", "from", "to", "sort", "limit"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "period": "period", "from_": "from", "to": "to", "sort": "sort", "limit": "limit"}},
             {},
@@ -1116,7 +1116,7 @@ class _AsyncWorkspace:
     async def usage(self, *, request_options: Optional[RequestOptions] = None) -> "WorkspaceUsage":
         """Get your plan's usage this period
 
-        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
+        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. Each entry also says where it stands and where we start refusing new use. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
         return await self._client._call(
             {"method": "get", "path": "/workspace/usage", "query": [], "body": False, "names": {}},
             {},

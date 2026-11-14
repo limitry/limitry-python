@@ -2,6 +2,32 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc13 (2026-11-14)
+
+### Added
+
+- The workspace's audit log (`GET /v1/workspace/audit-events`) records
+  `billing.cancellation_undone` when a plan set to cancel is kept after all.
+- The workspace's audit log (`GET /v1/workspace/audit-events`) records more
+  events. It now includes the workspace's creation and deletion, a declined
+  invitation, and plan changes: `workspace.created`, `workspace.deleted`,
+  `workspace.invitation_rejected` and `billing.subscribed`,
+  `billing.plan_changed`, `billing.cancellation_scheduled` and
+  `billing.subscription_ended`.
+- `GET /v1/workspace/usage` now says where each count stands. Each count
+  gains `label`, `state` and `stopsAt`, and `unit` when the plan names
+  one. The response gains a `state` for the whole workspace.
+  `client.workspace.usage.get()` and the Python client return them. The
+  CLI's `workspace usage` prints each count as a sentence that says where
+  it stands. Use `--json` for the response as it is.
+
+### Fixed
+
+- `usage.overview()` (`GET /v1/usage/overview`) now totals each limit's whole
+  current window on every plan. On Free, a monthly limit's `total` covered
+  only the last 7 days; it now covers the whole month, as each subject's
+  amounts already did.
+
 ## 1.0.0rc12 (2026-11-09)
 
 ### Added

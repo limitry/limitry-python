@@ -4,8 +4,9 @@ build-backend = "uv_build"
 
 [project]
 name = "limitry"
-version = "1.0.0rc12"
+version = "1.0.0rc13"
 description = "Limitry API client"
+keywords = ["usage-limits", "rate-limiting", "credits", "budgets", "quotas", "python", "sdk", "api-client", "asyncio"]
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

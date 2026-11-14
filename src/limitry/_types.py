@@ -89,6 +89,7 @@ class ApprovalRequest(TypedDict):
 class _WorkspaceUsageRequired(TypedDict):
     periodStart: str  # When this period began. Each period starts a month after the last one, counted from the billing date
     periodEnd: str  # When the counts reset.
+    state: Literal["within", "grace", "stopped", "over"]  # Where the workspace stands, from its most limited count. The order from worst is `stopped`, `grace`,
     counts: List[Dict[str, Any]]
 
 
