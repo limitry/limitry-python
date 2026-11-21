@@ -1,6 +1,6 @@
 """The SDK's runtime: credentials, requests, errors.
 
-Hand-written (packages/sdk-python/runtime/); the build copies it into the
+Hand-written (packages/python-sdk/runtime/); the build copies it into the
 product's package beside the generated methods (``_resources.py``) and types
 (``_types.py``). Every method a resource has calls ``_call`` with its
 operation's shape: method, path, which inputs go in the query string, and

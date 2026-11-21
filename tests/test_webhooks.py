@@ -1,6 +1,6 @@
 """Webhook verification, against a delivery signed by the platform's own
 signer (packages/jobs/src/webhooks.ts) — the same check the TypeScript SDK
-makes (packages/sdk/src/webhooks.test.ts)."""
+makes (packages/typescript-sdk/src/webhooks.test.ts)."""
 
 import pytest
 
