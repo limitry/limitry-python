@@ -2,6 +2,10 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc18 (2026-11-22)
+
+No user-facing changes.
+
 ## 1.0.0rc17 (2026-11-22)
 
 ### Changed
