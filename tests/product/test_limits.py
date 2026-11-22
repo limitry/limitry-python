@@ -42,11 +42,11 @@ def test_guard_refuses_before_the_block(sdk):
     }
     limitry, _ = api(sdk, lambda r: httpx.Response(200, json=refusal))
     ran = []
-    with pytest.raises(sdk.LimitReached) as raised:
+    with pytest.raises(sdk.LimitReachedError) as raised:
         with limitry.guard(subject=USER, action="ai-call"):
             ran.append(True)
     assert ran == []
-    assert not isinstance(raised.value, sdk.Unavailable)
+    assert not isinstance(raised.value, sdk.UnavailableError)
     assert (raised.value.reason, raised.value.limit_id, raised.value.retry_after_seconds) == (
         "limit_reached",
         "lmt_a",
@@ -76,7 +76,7 @@ def test_refusal_shows_the_apis_sentence(sdk):
         "retryAfterSeconds": 60,
     }
     limitry, _ = api(sdk, lambda r: httpx.Response(200, json=refusal))
-    with pytest.raises(sdk.LimitReached) as raised:
+    with pytest.raises(sdk.LimitReachedError) as raised:
         with limitry.guard(subject=USER, action="ai-call"):
             pass
     assert str(raised.value) == "Refused by AI replies per day: 0 replies left. Try again in 60 s."
@@ -110,7 +110,7 @@ def test_unreachable_fails_open_then_closed_once_a_closed_limit_was_seen(sdk, no
         pass  # open: no decision seen yet
     with limitry.guard(subject=USER, action="a"):
         pass
-    with pytest.raises(sdk.Unavailable):
+    with pytest.raises(sdk.UnavailableError):
         with limitry.guard(subject=USER, action="a"):
             pass
 
@@ -152,10 +152,10 @@ def test_unreachable_is_unavailable_when_closed_and_runs_when_open(sdk, no_waiti
     state["down"] = True
     ran = []
     if fail_mode == "closed":
-        with pytest.raises(sdk.Unavailable) as raised:
+        with pytest.raises(sdk.UnavailableError) as raised:
             with limitry.guard(subject=USER, action="a"):
                 ran.append(True)
-        assert not isinstance(raised.value, sdk.LimitReached)
+        assert not isinstance(raised.value, sdk.LimitReachedError)
         assert ran == []
     else:
         with limitry.guard(subject=USER, action="a"):
@@ -167,9 +167,10 @@ def test_a_bad_request_is_the_callers_mistake(sdk):
     limitry, _ = api(
         sdk, lambda r: httpx.Response(400, json={"error": {"code": "invalid_request", "message": "no"}})
     )
-    with pytest.raises(sdk.ApiError):
+    with pytest.raises(sdk.BadRequestError) as raised:
         with limitry.guard(subject=USER, action="a"):
             pass
+    assert raised.value.status_code == 400 and raised.value.code == "invalid_request"
 
 
 def test_reserve_commits_the_reported_cost(sdk):
@@ -180,7 +181,7 @@ def test_reserve_commits_the_reported_cost(sdk):
         else httpx.Response(200, json={}),
     )
     with limitry.reserve(subject=USER, action="chat", cost=4000) as reservation:
-        reservation.cost(1234)
+        reservation.cost = 1234
     check, commit = seen
     assert json.loads(check.content)["mode"] == "reserve"
     assert commit.url.path == "/v1/reservations/res_1/commit"
@@ -203,7 +204,7 @@ def test_reserve_releases_when_the_block_raises(sdk):
 def test_standing_asks_for_the_subject_and_shared_pools(sdk):
     limitry, seen = api(sdk, lambda r: httpx.Response(200, json={"limits": []}))
     limitry.standing(subject=USER, shared=[{"kind": "team", "id": "t1"}])
-    assert seen[0].url.params["subject"] == "user:u1"
+    assert seen[0].url.path == "/v1/subjects/user/u1/standing"
     assert seen[0].url.params["shared"] == "team:t1"
 
 
@@ -221,7 +222,7 @@ def test_async_reserve_commits(sdk):
             token="sk_test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond))
         ) as limitry:
             async with limitry.reserve(subject=USER, action="chat", cost=10) as reservation:
-                reservation.cost(7)
+                reservation.cost = 7
 
     asyncio.run(run())
     assert json.loads(seen[1].content) == {"cost": 7}
@@ -291,7 +292,12 @@ def test_retries_stay_inside_the_check_budget(sdk, monkeypatch):
     limitry, seen = api(sdk, lambda r: httpx.Response(503, headers={"retry-after": "5"}))
     with limitry.guard(subject=USER, action="a", timeout=1.5):
         pass  # open: ran uncounted
-    assert len(seen) == 1 and slept == []
+    assert slept == []
+    # Then, the block done, the same check only to finish it (no answer in
+    # time: it may be part way across Limitry's servers).
+    assert len(seen) == 2
+    assert seen[1].headers["limitry-finish-only"] == "1"
+    assert seen[1].headers["idempotency-key"] == seen[0].headers["idempotency-key"]
 
 
 @pytest.mark.parametrize("bad", [2.5, -1, 1_000_000_001, True, "3"])
@@ -304,7 +310,7 @@ def test_a_cost_the_api_would_not_commit_raises_in_the_block(sdk, bad):
     )
     with pytest.raises(ValueError):
         with limitry.reserve(subject=USER, action="chat") as reservation:
-            reservation.cost(bad)
+            reservation.cost = bad
     # Never a commit the API would refuse: the reservation is released.
     assert [r.url.path for r in seen] == ["/v1/checks", "/v1/reservations/res_1/release"]
 
@@ -317,7 +323,7 @@ def test_a_whole_float_cost_commits_as_an_integer(sdk):
         else httpx.Response(200, json={}),
     )
     with limitry.reserve(subject=USER, action="chat") as reservation:
-        reservation.cost(3.0)
+        reservation.cost = 3.0
     assert json.loads(seen[1].content) == {"cost": 3}
 
 
@@ -330,11 +336,11 @@ def test_extend_passes_the_ttl_as_given_and_raises_the_apis_refusal(sdk):
         return httpx.Response(200, json={})
 
     limitry, seen = api(sdk, handler)
-    with pytest.raises(sdk.ApiError) as raised:
+    with pytest.raises(sdk.BadRequestError) as raised:
         with limitry.reserve(subject=USER, action="export") as reservation:
             reservation.extend(0)
     assert json.loads(seen[1].content) == {"ttlSeconds": 0}
-    assert raised.value.status == 400
+    assert raised.value.status_code == 400
 
 
 def test_settles_retry_with_one_key(sdk, no_waiting):
@@ -347,7 +353,7 @@ def test_settles_retry_with_one_key(sdk, no_waiting):
 
     limitry, seen = api(sdk, handler)
     with limitry.reserve(subject=USER, action="chat") as reservation:
-        reservation.cost(2)
+        reservation.cost = 2
     commits = [r for r in seen if r.url.path.endswith("/commit")]
     assert len(commits) == 2
     assert commits[0].headers["idempotency-key"] == commits[1].headers["idempotency-key"]
@@ -356,12 +362,12 @@ def test_settles_retry_with_one_key(sdk, no_waiting):
 def test_standing_retries_and_reports_a_non_json_error(sdk, no_waiting):
     answers = [httpx.Response(502), httpx.Response(200, json={"limits": []})]
     limitry, seen = api(sdk, lambda r: answers.pop(0))
-    assert limitry.standing(subject=USER) == {"limits": []}
+    assert limitry.standing(subject=USER).limits == []
     assert len(seen) == 2
     limitry, _ = api(sdk, lambda r: httpx.Response(404, text="not json"))
-    with pytest.raises(sdk.ApiError) as raised:
+    with pytest.raises(sdk.NotFoundError) as raised:
         limitry.standing(subject=USER)
-    assert raised.value.status == 404
+    assert raised.value.status_code == 404
 
 
 def test_async_cost_is_checked_too(sdk):
@@ -375,7 +381,7 @@ def test_async_cost_is_checked_too(sdk):
             token="sk_test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond))
         ) as limitry:
             async with limitry.reserve(subject=USER, action="chat") as reservation:
-                reservation.cost(-1)
+                reservation.cost = -1
 
     with pytest.raises(ValueError):
         asyncio.run(run())
@@ -406,7 +412,7 @@ def test_moving_past_the_timeout_lets_the_fail_mode_decide(sdk, no_waiting):
         pass  # open: ran uncounted, within the 1.5 s
     # Asked, a second's wait (fits), asked again; the next won't fit.
     assert len(seen) == 2
-    with pytest.raises(sdk.Unavailable):
+    with pytest.raises(sdk.UnavailableError):
         with limitry.guard(subject=USER, action="a", fail_mode="closed"):
             pass
 
@@ -489,7 +495,7 @@ def test_busy_shares_movings_budget_then_the_fail_mode_decides(sdk, monkeypatch)
     assert sum(slept) <= 30.0 and len(seen) > 5
     for n, s in enumerate(slept):
         assert 1.0 <= s < 1.0 + min(4.0, 0.25 * 2**n)
-    with pytest.raises(sdk.Unavailable):
+    with pytest.raises(sdk.UnavailableError):
         with limitry.guard(subject=USER, action="a", fail_mode="closed"):
             pass
 
@@ -576,7 +582,7 @@ def test_an_open_concurrent_limit_runs_at_most_its_amount_while_unreachable(sdk,
         ran.append(1)
         with limitry.reserve(subject=USER, action="run"):
             ran.append(2)
-            with pytest.raises(sdk.Unavailable):
+            with pytest.raises(sdk.UnavailableError):
                 with limitry.reserve(subject=USER, action="run"):
                     ran.append(3)
             # Another subject has its own count.
@@ -595,7 +601,7 @@ def test_runs_limitry_answered_count_too(sdk, no_waiting):
     with limitry.reserve(subject=USER, action="run"):
         state["down"] = True
         with limitry.reserve(subject=USER, action="run"):
-            with pytest.raises(sdk.Unavailable):
+            with pytest.raises(sdk.UnavailableError):
                 with limitry.reserve(subject=USER, action="run"):
                     pass
 
@@ -645,7 +651,7 @@ def test_async_an_open_concurrent_limit_runs_at_most_its_amount(sdk, no_waiting)
                     async with limitry.reserve(subject=USER, action="run"):
                         outcomes.append("ran")
                         await gate.wait()
-                except sdk.Unavailable:
+                except sdk.UnavailableError:
                     outcomes.append("unavailable")
                     gate.set()
 
@@ -653,3 +659,110 @@ def test_async_an_open_concurrent_limit_runs_at_most_its_amount(sdk, no_waiting)
 
     asyncio.run(run())
     assert sorted(outcomes) == ["ran", "ran", "unavailable"]
+
+
+def test_errors_sit_under_the_sdks_base_and_say_why(sdk):
+    limitry, _ = api(sdk, lambda r: httpx.Response(402, json={"error": {"code": "plan_limit_reached"}}))
+    with pytest.raises(sdk.UnavailableError) as raised:
+        with limitry.guard(subject=USER, action="a", fail_mode="closed"):
+            pass
+    assert isinstance(raised.value, sdk.LimitryError)
+    assert raised.value.reason == "plan_limit_reached"
+    # What failed is kept: the API's own error for the 402.
+    assert isinstance(raised.value.__cause__, sdk.PlanLimitError)
+    refused = {"allowed": False, "limits": [], "reason": {"code": "limit_reached", "limitId": "lmt_a"}}
+    limitry, _ = api(sdk, lambda r: httpx.Response(200, json=refused))
+    with pytest.raises(sdk.LimitryError):
+        with limitry.guard(subject=USER, action="a"):
+            pass
+
+
+def test_a_call_names_its_own_key_and_headers(sdk):
+    limitry, seen = api(sdk, lambda r: httpx.Response(200, json=allowed()))
+    with limitry.guard(subject=USER, action="a", idempotency_key="order-42", extra_headers={"x-trace": "t1"}):
+        pass
+    assert seen[0].headers["idempotency-key"] == "order-42"
+    assert seen[0].headers["x-trace"] == "t1"
+
+
+def test_cost_is_a_property_checked_as_it_is_set(sdk):
+    limitry, seen = api(
+        sdk,
+        lambda r: httpx.Response(200, json=allowed(reservation={"id": "res_p"}))
+        if r.url.path.endswith("/checks")
+        else httpx.Response(200, json={}),
+    )
+    with limitry.reserve(subject=USER, action="chat", cost=10) as reservation:
+        assert reservation.cost == 10 and reservation.reserved == 10
+        reservation.cost = 4
+        with pytest.raises(ValueError):
+            reservation.cost = -1
+    assert json.loads(seen[-1].content) == {"cost": 4}
+
+
+def test_a_cancelled_async_guard_stops_at_once_and_never_runs_the_block(sdk):
+    async def hang(request):
+        await asyncio.sleep(60)
+        return httpx.Response(200, json=allowed())
+
+    ran = []
+
+    async def run():
+        async with sdk.AsyncLimitry(
+            token="sk_test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(hang))
+        ) as limitry:
+            async def guarded():
+                async with limitry.guard(subject=USER, action="a", timeout=30, fail_mode="closed"):
+                    ran.append(True)
+
+            # asyncio.timeout() on 3.11+; wait_for cancels the task the same way.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(guarded(), 0.05)
+
+    started = asyncio.run(_timed(run))
+    assert ran == []
+    assert started < 5
+
+
+def test_a_cancelled_async_reserve_releases_what_its_check_reserved(sdk):
+    seen = []
+    first = []
+
+    async def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/checks"):
+            if not first:
+                first.append(True)
+                await asyncio.sleep(60)  # cancelled here
+            return httpx.Response(200, json=allowed(reservation={"id": "res_c"}))
+        return httpx.Response(200, json={})
+
+    async def run():
+        async with sdk.AsyncLimitry(
+            token="sk_test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        ) as limitry:
+            async def reserved():
+                async with limitry.reserve(subject=USER, action="chat", timeout=30):
+                    pass
+
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(reserved(), 0.05)
+            # The release runs in a background task.
+            for _ in range(100):
+                if any(r.url.path.endswith("/release") for r in seen):
+                    break
+                await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    checks = [r for r in seen if r.url.path.endswith("/checks")]
+    assert len(checks) == 2
+    assert checks[1].headers["idempotency-key"] == checks[0].headers["idempotency-key"]
+    assert seen[-1].url.path == "/v1/reservations/res_c/release"
+
+
+async def _timed(run):
+    import time as _time
+
+    started = _time.monotonic()
+    await run()
+    return _time.monotonic() - started

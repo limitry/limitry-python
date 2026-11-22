@@ -15,21 +15,30 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any, Dict, Mapping, Optional, TypedDict, Union
+from datetime import datetime
+from typing import Any, Dict, Mapping, Optional, Union
+
+import pydantic
+
+from ._error import ProductError
+from ._models import BaseModel, construct
 
 
-class WebhookEvent(TypedDict):
+class WebhookEvent(BaseModel):
     """The event a delivery carries."""
 
     id: str
     """The event's id (`evt_…`), the same in every delivery of it: dedupe on it."""
     type: str
-    """What happened, such as `member.joined`."""
-    createdAt: str
+    """What happened, such as `workspace.member.joined`."""
+    created_at: datetime = pydantic.Field(alias="createdAt")
+    """When it happened."""
     data: Dict[str, Any]
+    """The event's details, in the API's field names; the event type's
+    entry on the docs' Webhooks page lists them."""
 
 
-class WebhookVerificationError(Exception):
+class WebhookVerificationError(ProductError):
     """A delivery that failed verification: not from us, altered, or too old."""
 
 
@@ -85,9 +94,12 @@ def verify_webhook(
     else:
         raise WebhookVerificationError("The signature doesn't match")
     try:
-        return json.loads(text)
+        payload = json.loads(text)
     except ValueError:
         raise WebhookVerificationError("The body isn't JSON") from None
+    if not isinstance(payload, dict):
+        raise WebhookVerificationError("The body isn't an event")
+    return construct(WebhookEvent, payload)
 
 
 class Webhooks:

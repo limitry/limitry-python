@@ -2,12 +2,14 @@
 # route definitions. Do not edit; do not commit.
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from datetime import date, datetime
+from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
 import httpx
 
-from ._runtime import DEFAULT_MAX_RETRIES, NOT_GIVEN, AsyncClient, Client, RequestOptions
-from ._types import *  # noqa: F403
+from ._pagination import AsyncPaginator, SyncPage
+from ._runtime import DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, NOT_GIVEN, AsyncClient, Client, NotGiven, Timeout
+from .types import *  # noqa: F403
 from .product import AsyncProductMethods, ProductMethods
 
 
@@ -15,7 +17,7 @@ class _Checks:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> Union["CheckDecision", None]:
+    def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> CheckDecision:
         """Check whether a subject may act
 
         Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies. In `consume` mode, it also counts the use. Every decision returns 200, whether it's allowed or refused, so read `allowed`. `limits` shows what's left on each limit, and `retryAfterSeconds` says when to try again. With an `Idempotency-Key` header, a retried check gets the same decision for an hour and counts only once. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
@@ -23,18 +25,25 @@ class _Checks:
             {"method": "post", "path": "/checks", "query": [], "body": True, "names": {"subject": "subject", "shared": "shared", "action": "action", "cost": "cost", "mode": "mode", "ttl_seconds": "ttlSeconds"}},
             {},
             {"subject": subject, "shared": shared, "action": action, "cost": cost, "mode": mode, "ttl_seconds": ttl_seconds},
-            request_options,
+            cast_to=CheckDecision,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def recent(self, *, subject: str = NOT_GIVEN, refused: Literal["true", "false"] = NOT_GIVEN, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "RecentChecks":
-        """List recent checks
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject: str = NOT_GIVEN, refused: Literal["true", "false"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[Check]:
+        """List checks
 
-        Lists the checks of the last 3 days, newest first, with every subject each one named and whether Limitry allowed it. A refused check says whose budget refused it. Name a `subject` as `kind:id` for only the checks that named it, or set `refused` for only refused ones. Limitry keeps the last 3 days, and at most 100,000 checks in each environment. Results come a page at a time."""
-        return self._client._call(
-            {"method": "get", "path": "/checks/recent", "query": ["subject", "refused", "limit", "cursor"], "body": False, "names": {"subject": "subject", "refused": "refused", "limit": "limit", "cursor": "cursor"}},
+        Lists the checks of the last 3 days, newest first, with every subject each one named and whether Limitry allowed it. A refused check says whose budget refused it. Name a `subject` as `kind:id` for only the checks that named it, or set `refused` for only refused ones. Send `before` to start from a moment. Limitry keeps the last 3 days, and at most 100,000 checks in each environment. Results come a page at a time.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
+            {"method": "get", "path": "/checks", "query": ["limit", "cursor", "before", "subject", "refused"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "subject": "subject", "refused": "refused"}},
             {},
-            {"subject": subject, "refused": refused, "limit": limit, "cursor": cursor},
-            request_options,
+            {"limit": limit, "cursor": cursor, "before": before, "subject": subject, "refused": refused},
+            item=Check,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -42,7 +51,7 @@ class _LimitsCredits:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Credit":
+    def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Credit:
         """Add credits to a balance
 
         Adds `amount` credits to one subject's balance, on a limit whose window is `total`. A negative `amount` takes credits back, such as after a refund or a chargeback, and needs a `note` saying why. The balance can go below zero, and Limitry then refuses checks until you add more credits. Owners, admins and workspace API keys can add credits. An agent connected through MCP asks a person instead, through the `limit.credit` approval. Limitry keeps a credit's `Idempotency-Key` forever, so never reuse one for a new credit."""
@@ -50,18 +59,38 @@ class _LimitsCredits:
             {"method": "post", "path": "/limits/{limitId}/credits", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
             {"limitId": limit_id},
             {"subject": subject, "amount": amount, "note": note},
-            request_options,
+            cast_to=Credit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def list(self, limit_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CreditPage":
+    def get(self, limit_id: Union[str, int], credit_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Credit:
+        """Get a credit
+
+        Returns one credit added to a subject's balance on this limit."""
+        return self._client._call(
+            {"method": "get", "path": "/limits/{limitId}/credits/{creditId}", "query": [], "body": False, "names": {}},
+            {"limitId": limit_id, "creditId": credit_id},
+            {},
+            cast_to=Credit,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+    def list(self, limit_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[Credit]:
         """List a balance's credits
 
-        Lists the credits added to subjects' balances on this limit, including any taken back, newest first. Page through them with the opaque `nextCursor`. `before` starts from a moment, and `subjectId` keeps one subject's credits."""
-        return self._client._call(
+        Lists the credits added to subjects' balances on this limit, including any taken back, newest first. Page through them with the opaque `nextCursor`. `before` starts from a moment, and `subjectId` keeps one subject's credits.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/limits/{limitId}/credits", "query": ["limit", "cursor", "before", "subjectId"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "subject_id": "subjectId"}},
             {"limitId": limit_id},
             {"limit": limit, "cursor": cursor, "before": before, "subject_id": subject_id},
-            request_options,
+            item=Credit,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -70,7 +99,7 @@ class _Limits:
         self._client = client
         self.credits = _LimitsCredits(client)
 
-    def archive(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> None:
+    def archive(self, limit_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Archive a limit
 
         Archives a limit, so checks stop enforcing it at once and it leaves the list. Archiving erases nothing. Limitry keeps the limit's usage history and credits, and `POST /v1/limits/{limitId}/restore` brings it back. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -78,10 +107,13 @@ class _Limits:
             {"method": "post", "path": "/limits/{limitId}/archive", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def create(self, *, subject: Dict[str, Any], amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], name: str = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    def create(self, *, subject: Dict[str, Any], amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], name: str = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Create a limit
 
         Creates a limit on how much a subject may use per window, such as 200 cents a month for every `user`. You only need to send `subject.kind`, `amount` and `window`. `action` defaults to every action (`*`), `unit` to units, and `name` to the sentence the limit reads as. The next check enforces the new limit. You can't change a limit's subject, action, unit, window, every, start or rolling after you create it. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -89,10 +121,13 @@ class _Limits:
             {"method": "post", "path": "/limits", "query": [], "body": True, "names": {"name": "name", "subject": "subject", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
             {},
             {"name": name, "subject": subject, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def get(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Limit":
+    def get(self, limit_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Get a limit
 
         Returns one limit, with who it applies to, its action, its amount and its window."""
@@ -100,21 +135,27 @@ class _Limits:
             {"method": "get", "path": "/limits/{limitId}", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
-            request_options,
+            cast_to=Limit,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, subject_kind: str = NOT_GIVEN, action: str = NOT_GIVEN, archived: Literal["true", "false"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, subject_kind: str = NOT_GIVEN, action: str = NOT_GIVEN, archived: Literal["true", "false"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[Limit]:
         """List limits
 
-        Lists this environment's active limits, newest first. With `archived=true`, it lists the archived ones instead. Filter by `subjectKind` and `action`, and page through the results with the opaque `nextCursor` token."""
-        return self._client._call(
+        Lists this environment's active limits, newest first. With `archived=true`, it lists the archived ones instead. Filter by `subjectKind` and `action`, and page through the results with the opaque `nextCursor` token.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/limits", "query": ["limit", "cursor", "subjectKind", "action", "archived"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "subject_kind": "subjectKind", "action": "action", "archived": "archived"}},
             {},
             {"limit": limit, "cursor": cursor, "subject_kind": subject_kind, "action": action, "archived": archived},
-            request_options,
+            item=Limit,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def restore(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Limit":
+    def restore(self, limit_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Restore an archived limit
 
         Brings an archived limit back. Checks enforce it again if it's enabled. The API refuses it while an active limit has the same name. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -122,21 +163,27 @@ class _Limits:
             {"method": "post", "path": "/limits/{limitId}/restore", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def sync(self, *, limits: List[Any], archive_missing: bool = NOT_GIVEN, preview: bool = NOT_GIVEN, source: str = NOT_GIVEN, kinds: List[Dict[str, Any]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitSyncResult":
+    def sync(self, *, limits: List[Any], archive_missing: bool = NOT_GIVEN, dry_run: bool = NOT_GIVEN, source: str = NOT_GIVEN, kinds: List[Dict[str, Any]] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> LimitSyncResult:
         """Sync limits from a list
 
-        Makes the environment's limits match the list in `limits`, pairing them up by name. It creates the limits that are missing and changes the ones that differ, where an omitted field means its default. With `archiveMissing`, it also archives the active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list before writing anything. If any entry has a problem, nothing changes, and the 400 lists each problem in `details`. Otherwise Limitry writes every change at once. You can't change a limit's subject, action, unit, window, every, start or rolling under the same name, so rename the entry to do that. With `preview`, it returns what it would do without writing anything. What a sync sets is locked in the app until the next sync, which names its `source`. This is the call behind `limitry sync`, for keeping your limits in a file in your repository. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        Makes the environment's limits match the list in `limits`, pairing them up by name. It creates the limits that are missing and changes the ones that differ, where an omitted field means its default. With `archiveMissing`, it also archives the active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list before writing anything. If any entry has a problem, nothing changes, and the 400 lists each problem in `details`. Otherwise Limitry writes every change at once. You can't change a limit's subject, action, unit, window, every, start or rolling under the same name, so rename the entry to do that. With `dryRun`, it returns what it would do without writing anything. What a sync sets is locked in the app until the next sync, which names its `source`. This is the call behind `limitry sync`, for keeping your limits in a file in your repository. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
         return self._client._call(
-            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "preview": "preview", "source": "source", "kinds": "kinds"}},
+            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "dry_run": "dryRun", "source": "source", "kinds": "kinds"}},
             {},
-            {"limits": limits, "archive_missing": archive_missing, "preview": preview, "source": source, "kinds": kinds},
-            request_options,
+            {"limits": limits, "archive_missing": archive_missing, "dry_run": dry_run, "source": source, "kinds": kinds},
+            cast_to=LimitSyncResult,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, amount: int = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, subject: Dict[str, Any] = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, override: Dict[str, Any] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, amount: int = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, subject: Dict[str, Any] = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, override: Dict[str, Any] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Change a limit
 
         Changes a limit's name, amount, fail mode or whether it's enabled. Checks use the new rule at once. You can't change a limit's subject, action, unit, window, every, start or rolling, and a request that tries gets a 400. To count something different, create a new limit and archive this one. A limit a sync sets (its `setIn`) changes only through the sync. A request to change one gets a 409 that names where the sync came from, unless it sends `override` with a reason. An override lasts until the next sync. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -144,7 +191,10 @@ class _Limits:
             {"method": "patch", "path": "/limits/{limitId}", "query": [], "body": True, "names": {"name": "name", "amount": "amount", "enabled": "enabled", "fail_mode": "failMode", "subject": "subject", "action": "action", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "override": "override"}},
             {"limitId": limit_id},
             {"name": name, "amount": amount, "enabled": enabled, "fail_mode": fail_mode, "subject": subject, "action": action, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "override": override},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -152,18 +202,21 @@ class _Reservations:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def commit(self, reservation_id: Union[str, int], *, cost: int, request_options: Optional[RequestOptions] = None) -> "Reservation":
+    def commit(self, reservation_id: Union[str, int], *, cost: int, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
         """Commit a reservation
 
-        Commits a reservation with the amount actually used (`cost`). If `cost` is less than the amount reserved, the rest goes back at once. If it's more, Limitry charges the whole `cost`, since the work happened. A commit up to 24 hours after the reservation expired still charges `cost`. Repeating a commit with the same `cost` returns the same result, and a different `cost` gets a 400. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
+        Commits a reservation with the amount actually used (`cost`). If `cost` is less than the amount reserved, the rest goes back at once. If it's more, Limitry charges the whole `cost`, since the work happened. A commit up to 24 hours after the reservation expired still charges `cost`. Repeating a commit with the same `cost` returns the same result, and a different `cost` gets a 400. Committing a released reservation gets a 409. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
         return self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/commit", "query": [], "body": True, "names": {"cost": "cost"}},
             {"reservationId": reservation_id},
             {"cost": cost},
-            request_options,
+            cast_to=Reservation,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def extend(self, reservation_id: Union[str, int], *, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Reservation":
+    def extend(self, reservation_id: Union[str, int], *, ttl_seconds: int = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
         """Extend a reservation
 
         Keeps a reservation open for longer work, so it expires `ttlSeconds` from now. Call it again as a heartbeat while the work runs. You can only extend a reservation that's still held. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
@@ -171,10 +224,26 @@ class _Reservations:
             {"method": "post", "path": "/reservations/{reservationId}/extend", "query": [], "body": True, "names": {"ttl_seconds": "ttlSeconds"}},
             {"reservationId": reservation_id},
             {"ttl_seconds": ttl_seconds},
-            request_options,
+            cast_to=Reservation,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def release(self, reservation_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Reservation":
+    def get(self, reservation_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
+        """Get a reservation
+
+        Returns a reservation as it stands: held, committed, released or expired, with what it reserved and what it finally used. A reservation past its expiry that nobody committed or released reads as expired. Reading it changes nothing."""
+        return self._client._call(
+            {"method": "get", "path": "/reservations/{reservationId}", "query": [], "body": False, "names": {}},
+            {"reservationId": reservation_id},
+            {},
+            cast_to=Reservation,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+    def release(self, reservation_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
         """Release a reservation
 
         Gives the whole reservation back, because the work didn't happen. Repeating a release within 24 hours returns the same result. You can't release a reservation you've already committed. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
@@ -182,26 +251,37 @@ class _Reservations:
             {"method": "post", "path": "/reservations/{reservationId}/release", "query": [], "body": False, "names": {}},
             {"reservationId": reservation_id},
             {},
-            request_options,
+            cast_to=Reservation,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+
+class _SubjectsNames:
+    def __init__(self, client: "Client") -> None:
+        self._client = client
+
+    def delete(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> None:
+        """Erase a subject's name and labels
+
+        Erases the name and labels you gave a subject. Its limits, usage and billing date stay, because they're kept by its ID. Use it when one of your users asks you to delete their data. Erasing a subject with no name or labels succeeds too. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        return self._client._call(
+            {"method": "delete", "path": "/subjects/{subjectKind}/{subjectId}/names", "query": [], "body": False, "names": {}},
+            {"subjectKind": subject_kind, "subjectId": subject_id},
+            {},
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
 class _Subjects:
     def __init__(self, client: "Client") -> None:
         self._client = client
+        self.names = _SubjectsNames(client)
 
-    def delete(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "SubjectNamesDeleted":
-        """Erase a subject's name and labels
-
-        Erases the name and labels you gave a subject. Its limits, usage and billing date stay, because they're kept by its ID. Use it when one of your users asks you to delete their data. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
-        return self._client._call(
-            {"method": "delete", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": False, "names": {}},
-            {"subjectKind": subject_kind, "subjectId": subject_id},
-            {},
-            request_options,
-        )
-
-    def get(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "SubjectDetail":
+    def get(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectDetail:
         """Get a subject
 
         Returns a subject: its billing date, the day its `billing_date` limits start each new period, its name and labels if you gave it any, its budgets, and the subjects it's checked with. A subject is one of yours, such as a user, a team or an agent. It exists once a check names it. Its links say what was spent within each budget this period: within another subject's budget, or another subject within its own."""
@@ -209,10 +289,12 @@ class _Subjects:
             {"method": "get", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": False, "names": {}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
             {},
-            request_options,
+            cast_to=SubjectDetail,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def import_(self, *, items: List[Dict[str, Any]], request_options: Optional[RequestOptions] = None) -> "SubjectImportResult":
+    def import_(self, *, items: List[Dict[str, Any]], idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectImportResult:
         """Name many subjects
 
         Sets the name and labels of up to 1,000 subjects at once, such as when you first connect your user list. Each item works like updating that subject's name and labels: a field you leave out stays as it is, and null clears it. Limitry checks every item before it saves any, so a bad item saves nothing. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -220,21 +302,28 @@ class _Subjects:
             {"method": "post", "path": "/subjects/import", "query": [], "body": True, "names": {"items": "items"}},
             {},
             {"items": items},
-            request_options,
+            cast_to=SubjectImportResult,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def list(self, *, kind: str = NOT_GIVEN, label: str = NOT_GIVEN, q: str = NOT_GIVEN, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectList":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, kind: str = NOT_GIVEN, label: str = NOT_GIVEN, q: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[SubjectListItem]:
         """List subjects
 
-        Lists every subject your checks have named in this environment, and every one you named, most recently checked first. Filter by `kind` or by one `label`, and search the name or the ID with `q`. Results come a page at a time."""
-        return self._client._call(
-            {"method": "get", "path": "/subjects", "query": ["kind", "label", "q", "limit", "cursor"], "body": False, "names": {"kind": "kind", "label": "label", "q": "q", "limit": "limit", "cursor": "cursor"}},
+        Lists every subject your checks have named in this environment, and every one you named, most recently checked first. Filter by `kind` or by one `label`, and search the name or the ID with `q`. Results come a page at a time.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
+            {"method": "get", "path": "/subjects", "query": ["limit", "cursor", "kind", "label", "q"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "kind": "kind", "label": "label", "q": "q"}},
             {},
-            {"kind": kind, "label": label, "q": q, "limit": limit, "cursor": cursor},
-            request_options,
+            {"limit": limit, "cursor": cursor, "kind": kind, "label": label, "q": q},
+            item=SubjectListItem,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def reset(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, limit_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectResetResult":
+    def reset(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, limit_id: str = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectResetResult:
         """Reset a subject's limits
 
         Resets one limit on a subject now, or every limit on it. Send `limitId` for one limit, or `{}` for all of them. Use it for goodwill, a promotion or support. The schedule doesn't move, so the next reset still happens when it normally would. A balance goes back to its amount, and the reset skips concurrent limits. With an Idempotency-Key, a repeated request resets only once. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -242,29 +331,37 @@ class _Subjects:
             {"method": "post", "path": "/subjects/{subjectKind}/{subjectId}/reset", "query": [], "body": True, "names": {"limit_id": "limitId"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
             {"limit_id": limit_id},
-            request_options,
+            cast_to=SubjectResetResult,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def set(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, name: Optional[str] = NOT_GIVEN, labels: Optional[Dict[str, str]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectNamesView":
-        """Name a subject
+    def standing(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, shared: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectStanding:
+        """Get where a subject stands
 
-        Sets a subject's name, its labels, or both. Both are optional, and checks never need them. A field you leave out stays as it is, and null clears it. Labels you send replace the subject's labels. `DELETE /v1/subjects/{subjectKind}/{subjectId}` erases them. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        Returns where one subject stands on every enabled limit, exact as of now. It covers the subject's own limits and the limits on its shared subjects. List the shared subjects in `shared`, such as `team:team_42`. Each limit shows what's used, what's left and when it resets. Use it to show your users where they stand. Call it from your server with your key, never from a browser. It isn't a check, so it counts nothing. A subject with no limits returns an empty `limits` list."""
         return self._client._call(
-            {"method": "put", "path": "/subjects/{subjectKind}/{subjectId}/names", "query": [], "body": True, "names": {"name": "name", "labels": "labels"}},
+            {"method": "get", "path": "/subjects/{subjectKind}/{subjectId}/standing", "query": ["shared"], "body": False, "names": {"shared": "shared"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
-            {"name": name, "labels": labels},
-            request_options,
+            {"shared": shared},
+            cast_to=SubjectStanding,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, billing_date: str, request_options: Optional[RequestOptions] = None) -> "Subject":
-        """Set a subject's billing date
+    def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, billing_anchor_at: str = NOT_GIVEN, name: Optional[str] = NOT_GIVEN, labels: Optional[Dict[str, str]] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Subject:
+        """Update a subject
 
-        Sets the date a subject's `billing_date` limits count their periods from. Usually this is the subscription's start date, set from your billing system's webhook. The subject's allowance then resets on its own billing day, and a monthly limit still resets monthly on an annual plan. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        Sets a subject's billing date, its name, its labels, or any of them. A field you leave out stays as it is, and null clears a name or labels. Labels you send replace the subject's labels. The billing date is the moment the subject's `billing_date` limits count their periods from, usually the subscription's start, set from your billing system's webhook. The subject's allowance then resets on its own billing day, and a monthly limit still resets monthly on an annual plan. A name and labels are optional, and checks never need them. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
         return self._client._call(
-            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"billing_date": "billingDate"}},
+            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"billing_anchor_at": "billingAnchorAt", "name": "name", "labels": "labels"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
-            {"billing_date": billing_date},
-            request_options,
+            {"billing_anchor_at": billing_anchor_at, "name": name, "labels": labels},
+            cast_to=Subject,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -272,7 +369,7 @@ class _Usage:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def overview(self, *, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: Optional[int] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageOverview":
+    def overview(self, *, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: Optional[int] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UsageOverview:
         """Get every limit's usage at once
 
         Returns every active limit's usage in one answer, for a question that names no limit. Each limit comes with its name, unit, amount and window, its `total` (units used, checks allowed and refused) and its top subjects. By default, it covers each limit's current window, with exact amounts. For a past range, send `period`, such as `last_month`, or `from` and `to`. The totals and subjects then come from history, and each subject's `remaining` is null. Set `sort` to `refused` to list only the subjects each limit refused, the most refused first. A balance also lists the credits added to it in the range. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
@@ -280,10 +377,12 @@ class _Usage:
             {"method": "get", "path": "/usage/overview", "query": ["period", "from", "to", "sort", "top"], "body": False, "names": {"period": "period", "from_": "from", "to": "to", "sort": "sort", "top": "top"}},
             {},
             {"period": period, "from_": from_, "to": to, "sort": sort, "top": top},
-            request_options,
+            cast_to=UsageOverview,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def query(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, subject: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageSeries":
+    def query(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, subject: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UsageSeries:
         """Get a limit's usage over time
 
         Returns one limit's usage over time: the units used, and the checks allowed and refused, with the range's `total` beside the buckets. It covers every subject, or one subject named in `subject` as `kind:id`. Name the limit by `limitId` or `limitName`. Choose the range with `period` (such as `last_month`) or `from` and `to`. Usage comes in hourly or daily buckets in UTC, and the response includes every bucket in the range. It can be up to about a minute behind live checks. By default, it covers the last 30 days, by day. A request returns at most 2,000 buckets. Usage older than your plan's history isn't returned."""
@@ -291,29 +390,22 @@ class _Usage:
             {"method": "get", "path": "/usage", "query": ["limitId", "limitName", "subject", "period", "from", "to", "granularity"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "subject": "subject", "period": "period", "from_": "from", "to": "to", "granularity": "granularity"}},
             {},
             {"limit_id": limit_id, "limit_name": limit_name, "subject": subject, "period": period, "from_": from_, "to": to, "granularity": granularity},
-            request_options,
+            cast_to=UsageSeries,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def standing(self, *, subject: str, shared: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageStanding":
-        """Get where a subject stands
-
-        Returns where one subject stands on every enabled limit, exact as of now. It covers the subject's own limits and the limits on its shared subjects. Name the subject as `kind:id`, such as `user:usr_123`, and list its shared subjects in `shared`, such as `team:team_42`. Each limit shows what's used, what's left and when it resets. Use it to show your users where they stand. Call it from your server with your key, never from a browser. It isn't a check, so it counts nothing. A subject with no limits returns an empty `limits` list."""
-        return self._client._call(
-            {"method": "get", "path": "/usage/standing", "query": ["subject", "shared"], "body": False, "names": {"subject": "subject", "shared": "shared"}},
-            {},
-            {"subject": subject, "shared": shared},
-            request_options,
-        )
-
-    def subjects(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, limit: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageBySubject":
+    def subjects(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: int = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UsageBySubject:
         """List who is using a limit
 
         Lists a limit's subjects in its current window, most used first. Each one shows the units used, what's left and how many checks the limit refused. The amounts are exact, but a subject first checked in the last minute may not appear yet. For a `concurrent` limit, it lists the slots each subject holds now, among the subjects checked in the last hour. Name the limit by `limitId` or `limitName`. For a past range, send `period`, such as `last_month`, or `from` and `to`. The subjects are then ranked by their use in that range, from history. Each one's `remaining` is then null. Set `sort` to `refused` to list the most refused first. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
         return self._client._call(
-            {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limitName", "period", "from", "to", "sort", "limit"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "period": "period", "from_": "from", "to": "to", "sort": "sort", "limit": "limit"}},
+            {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limitName", "period", "from", "to", "sort", "top"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "period": "period", "from_": "from", "to": "to", "sort": "sort", "top": "top"}},
             {},
-            {"limit_id": limit_id, "limit_name": limit_name, "period": period, "from_": from_, "to": to, "sort": sort, "limit": limit},
-            request_options,
+            {"limit_id": limit_id, "limit_name": limit_name, "period": period, "from_": from_, "to": to, "sort": sort, "top": top},
+            cast_to=UsageBySubject,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -321,7 +413,7 @@ class _User:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def me(self, *, request_options: Optional[RequestOptions] = None) -> "UserMe":
+    def me(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UserMe:
         """Get the current user
 
         Returns the user the personal access token belongs to, and their workspace memberships. Use it as a smoke test for an integration ("who am I?")."""
@@ -329,10 +421,12 @@ class _User:
             {"method": "get", "path": "/user/me", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=UserMe,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def revoke_token(self, *, request_options: Optional[RequestOptions] = None) -> None:
+    def revoke_token(self, *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> None:
         """Revoke the token making this request
 
         Revokes the personal access token that makes the request. Use it to sign out from a script or the CLI (`logout`). The token stops working immediately. Your other tokens keep working."""
@@ -340,7 +434,9 @@ class _User:
             {"method": "delete", "path": "/user/token", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -348,15 +444,17 @@ class _WorkspaceApprovalActions:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    def list(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalActionPage:
         """List the actions you can ask approval for
 
-        Lists the actions a credential can't take itself but can ask a person to approve. Each action comes with its input as a JSON Schema, who can approve it and whether it creates a secret."""
+        Lists the actions a credential can't take itself but can ask a person to approve. Each action comes with its input as a JSON Schema (`inputSchema`), who can approve it and whether it creates a secret. Every action fits on one page, so `nextCursor` is null."""
         return self._client._call(
             {"method": "get", "path": "/workspace/approval-actions", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=ApprovalActionPage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -364,7 +462,7 @@ class _WorkspaceApprovalRequests:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def create(self, *, action: str, input: Dict[str, Any], reason: str, request_options: Optional[RequestOptions] = None) -> "ApprovalRequest":
+    def create(self, *, action: str, input: Dict[str, Any], reason: str, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalRequest:
         """Ask a person to approve an action
 
         Creates a request for an action you can't take yourself and notifies everyone who can approve it. The actions you can ask for are in approval-actions. Show the person `approveUrl` and why you need the action. Then check the request until a person decides. A request expires after 24 hours. A personal access token or an app a person connected can ask. A workspace API key can't."""
@@ -372,29 +470,37 @@ class _WorkspaceApprovalRequests:
             {"method": "post", "path": "/workspace/approval-requests", "query": [], "body": True, "names": {"action": "action", "input": "input", "reason": "reason"}},
             {},
             {"action": action, "input": input, "reason": reason},
-            request_options,
+            cast_to=ApprovalRequest,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def get(self, request_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "ApprovalRequest":
+    def get(self, approval_request_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalRequest:
         """Check an approval request
 
         Returns an approval request you created, with its status. A `pending` request is waiting for a person to decide. A `completed` request's action ran, and `result` holds the outcome. An `approved` request is waiting for the CLI to redeem it. A request can also be `denied`, `failed` or `expired`."""
         return self._client._call(
-            {"method": "get", "path": "/workspace/approval-requests/{requestId}", "query": [], "body": False, "names": {}},
-            {"requestId": request_id},
+            {"method": "get", "path": "/workspace/approval-requests/{approvalRequestId}", "query": [], "body": False, "names": {}},
+            {"approvalRequestId": approval_request_id},
             {},
-            request_options,
+            cast_to=ApprovalRequest,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def redeem(self, request_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    def redeem(self, approval_request_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalRedemption:
         """Redeem an approved request
 
         Runs an approved action that creates a secret, and returns the secret. The action runs only once. Only the personal access token that asked can redeem it. The CLI writes the secret to a file without printing it."""
         return self._client._call(
-            {"method": "post", "path": "/workspace/approval-requests/{requestId}/redeem", "query": [], "body": False, "names": {}},
-            {"requestId": request_id},
+            {"method": "post", "path": "/workspace/approval-requests/{approvalRequestId}/redeem", "query": [], "body": False, "names": {}},
+            {"approvalRequestId": approval_request_id},
             {},
-            request_options,
+            cast_to=ApprovalRedemption,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -402,15 +508,19 @@ class _WorkspaceAuditEvents:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, action: str = NOT_GIVEN, actor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "AuditEventPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, action: str = NOT_GIVEN, actor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[AuditEvent]:
         """List workspace audit events
 
-        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. `before` starts from a moment. `action` keeps one kind of event, and `actor` what one person, key or token did. With a personal access token, only workspace owners and admins can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself."""
-        return self._client._call(
+        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. `before` starts from a moment. `action` keeps one kind of event, and `actor` what one person, key or token did. With a personal access token, only workspace owners and admins can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/audit-events", "query": ["limit", "cursor", "before", "action", "actor"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "action": "action", "actor": "actor"}},
             {},
             {"limit": limit, "cursor": cursor, "before": before, "action": action, "actor": actor},
-            request_options,
+            item=AuditEvent,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -418,15 +528,17 @@ class _WorkspaceEventTypes:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    def list(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> EventTypePage:
         """List event types
 
-        Lists every workspace event a webhook endpoint can subscribe to, and what each one means. Pass some as `eventTypes` when you add an endpoint. An endpoint without a list receives every event."""
+        Lists every workspace event a webhook endpoint can subscribe to, and what each one means. Pass some as `eventTypes` when you add an endpoint. An endpoint without a list receives every event. Every type fits on one page, so `nextCursor` is null."""
         return self._client._call(
             {"method": "get", "path": "/workspace/event-types", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=EventTypePage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -434,15 +546,19 @@ class _WorkspaceInvitations:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "InvitationPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[Invitation]:
         """List pending invitations
 
-        Lists the invitations that are not yet accepted, declined or expired, newest first. With a personal credential, only owners and admins can call this, as in the app. A workspace API key always can. Paginate with the opaque `nextCursor`."""
-        return self._client._call(
+        Lists the invitations that are not yet accepted, declined or expired, newest first. With a personal credential, only owners and admins can call this, as in the app. A workspace API key always can. Paginate with the opaque `nextCursor`.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/invitations", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
             {},
             {"limit": limit, "cursor": cursor},
-            request_options,
+            item=Invitation,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -450,15 +566,37 @@ class _WorkspaceMembers:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "MemberPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[Member]:
         """List workspace members
 
-        Lists the workspace's members and their roles, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Invite members, remove them and give them roles in the app."""
-        return self._client._call(
+        Lists the workspace's members and their roles, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Invite members, remove them and give them roles in the app.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/members", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
             {},
             {"limit": limit, "cursor": cursor},
-            request_options,
+            item=Member,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+
+class _WorkspacePlanUsage:
+    def __init__(self, client: "Client") -> None:
+        self._client = client
+
+    def get(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> PlanUsage:
+        """Get your plan's usage this period
+
+        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. Each entry also says where it stands and where we start refusing new use. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
+        return self._client._call(
+            {"method": "get", "path": "/workspace/plan-usage", "query": [], "body": False, "names": {}},
+            {},
+            {},
+            cast_to=PlanUsage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -466,15 +604,19 @@ class _WorkspaceTeams:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "TeamPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[Team]:
         """List teams
 
-        Lists the workspace's teams and their members' user ids, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Create teams and add members to them in the app."""
-        return self._client._call(
+        Lists the workspace's teams and their members' user ids, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Create teams and add members to them in the app.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/teams", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
             {},
             {"limit": limit, "cursor": cursor},
-            request_options,
+            item=Team,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -482,26 +624,33 @@ class _WorkspaceWebhookDeliveries:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, status: Literal["pending", "delivered", "failed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryPage":
+    def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, status: Literal["pending", "delivered", "failed"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SyncPage[WebhookDelivery]:
         """List an endpoint's deliveries
 
-        Lists one endpoint's delivery history, newest first. Each entry shows the event's status, attempts and last HTTP status. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. `before` starts from a moment, and `status` keeps one kind of delivery. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
-        return self._client._call(
+        Lists one endpoint's delivery history, newest first. Each entry shows the delivery's state, its attempts and the last HTTP status code. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. `before` starts from a moment, and `status` keeps one kind of delivery. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can.
+
+        Gives the first page; iterating it goes through every item, page by page."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries", "query": ["limit", "cursor", "before", "status"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "status": "status"}},
             {"endpointId": endpoint_id},
             {"limit": limit, "cursor": cursor, "before": before, "status": status},
-            request_options,
+            item=WebhookDelivery,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def redeliver(self, endpoint_id: Union[str, int], delivery_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryOutcome":
+    def redeliver(self, endpoint_id: Union[str, int], delivery_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookDeliveryOutcome:
         """Redeliver an event
 
-        Sends a recorded delivery's event again, as a new delivery. The new delivery gets its own history entry. The event id stays the same, so receivers can deduplicate. Redelivery only works on an enabled endpoint. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
+        Sends a recorded delivery's event again, as a new delivery. The new delivery gets its own history entry. The event id stays the same, so receivers can deduplicate. Redelivery only works on an enabled endpoint. It answers 200 when we attempted the delivery right away, with the endpoint's answer, and 202 when it went to the queue. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
         return self._client._call(
             {"method": "post", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries/{deliveryId}/redeliver", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id, "deliveryId": delivery_id},
             {},
-            request_options,
+            cast_to=WebhookDeliveryOutcome,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -509,18 +658,21 @@ class _WorkspaceWebhookEndpoints:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def create(self, *, url: str, description: str = NOT_GIVEN, event_types: List[str] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookEndpointCreated":
+    def create(self, *, url: str, description: str = NOT_GIVEN, event_types: List[str] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Add a webhook endpoint
 
-        Registers an HTTPS URL to receive the workspace's events. Deliveries use the same signature format as Svix. The response includes the endpoint's signing secret (`whsec_…`). You see it only once, so store it to verify deliveries. The API refuses private hosts and hosts without HTTPS. A workspace can have at most 10 endpoints. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
+        Registers an HTTPS URL to receive the workspace's events. Deliveries use the same signature format as Svix. The response is the new endpoint with its signing secret (`whsec_…`) in `secret`. You see it only once, so store it to verify deliveries. The API refuses private hosts and hosts without HTTPS. A workspace can have at most 10 endpoints. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
         return self._client._call(
             {"method": "post", "path": "/workspace/webhook-endpoints", "query": [], "body": True, "names": {"url": "url", "description": "description", "event_types": "eventTypes"}},
             {},
             {"url": url, "description": description, "event_types": event_types},
-            request_options,
+            cast_to=WebhookEndpoint,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def delete(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> None:
+    def delete(self, endpoint_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> None:
         """Remove a webhook endpoint
 
         Deletes the endpoint and its signing secret. All deliveries to the endpoint stop. Its delivery history goes with it. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -528,10 +680,12 @@ class _WorkspaceWebhookEndpoints:
             {"method": "delete", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def enable(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+    def enable(self, endpoint_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Re-enable a webhook endpoint
 
         Resumes deliveries to an endpoint that stopped after repeated failures. The endpoint keeps its signing secret. Its failure count resets. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -539,10 +693,13 @@ class _WorkspaceWebhookEndpoints:
             {"method": "post", "path": "/workspace/webhook-endpoints/{endpointId}/enable", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            cast_to=WebhookEndpoint,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def get(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+    def get(self, endpoint_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Get a webhook endpoint
 
         Returns one endpoint without its signing secret. It shows whether the endpoint is on, its consecutive failures and its last delivery status. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -550,10 +707,12 @@ class _WorkspaceWebhookEndpoints:
             {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            cast_to=WebhookEndpoint,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def list(self, *, request_options: Optional[RequestOptions] = None) -> "WebhookEndpointPage":
+    def list(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpointPage:
         """List webhook endpoints
 
         Lists the workspace's outgoing webhook endpoints, newest first. The list leaves out their signing secrets. A workspace has at most 10 endpoints, so the list is a single page. Its `nextCursor` is null. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -561,21 +720,26 @@ class _WorkspaceWebhookEndpoints:
             {"method": "get", "path": "/workspace/webhook-endpoints", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=WebhookEndpointPage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def test(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryOutcome":
+    def test(self, endpoint_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookDeliveryOutcome:
         """Send a test event
 
-        Sends a `ping` event to the endpoint, signed like every delivery. Use it to check that an integration verifies and accepts deliveries. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
+        Sends a `ping` event to the endpoint, signed like every delivery. Use it to check that an integration verifies and accepts deliveries. It answers 200 when we attempted the delivery right away, with the endpoint's answer, and 202 when it went to the queue. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
         return self._client._call(
             {"method": "post", "path": "/workspace/webhook-endpoints/{endpointId}/test", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            cast_to=WebhookDeliveryOutcome,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    def update(self, endpoint_id: Union[str, int], *, url: str = NOT_GIVEN, description: Optional[str] = NOT_GIVEN, event_types: Optional[List[str]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+    def update(self, endpoint_id: Union[str, int], *, url: str = NOT_GIVEN, description: Optional[str] = NOT_GIVEN, event_types: Optional[List[str]] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Update a webhook endpoint
 
         Changes an endpoint's URL, description or event types in place. Only the fields you send change. The endpoint keeps its signing secret, so receivers keep verifying deliveries. A new URL must pass the same checks as on create. It must use HTTPS and can't be a private host. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -583,7 +747,10 @@ class _WorkspaceWebhookEndpoints:
             {"method": "patch", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": True, "names": {"url": "url", "description": "description", "event_types": "eventTypes"}},
             {"endpointId": endpoint_id},
             {"url": url, "description": description, "event_types": event_types},
-            request_options,
+            cast_to=WebhookEndpoint,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -596,11 +763,12 @@ class _Workspace:
         self.event_types = _WorkspaceEventTypes(client)
         self.invitations = _WorkspaceInvitations(client)
         self.members = _WorkspaceMembers(client)
+        self.plan_usage = _WorkspacePlanUsage(client)
         self.teams = _WorkspaceTeams(client)
         self.webhook_deliveries = _WorkspaceWebhookDeliveries(client)
         self.webhook_endpoints = _WorkspaceWebhookEndpoints(client)
 
-    def get(self, *, request_options: Optional[RequestOptions] = None) -> "Workspace":
+    def get(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Workspace:
         """Get the current workspace
 
         Returns the workspace the credential acts in. For an API key, that is the key's own workspace. For a personal access token, it is the one named in `X-Workspace`. Use it as a smoke test for an integration ("who am I?")."""
@@ -608,18 +776,9 @@ class _Workspace:
             {"method": "get", "path": "/workspace", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
-        )
-
-    def usage(self, *, request_options: Optional[RequestOptions] = None) -> "WorkspaceUsage":
-        """Get your plan's usage this period
-
-        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. Each entry also says where it stands and where we start refusing new use. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
-        return self._client._call(
-            {"method": "get", "path": "/workspace/usage", "query": [], "body": False, "names": {}},
-            {},
-            {},
-            request_options,
+            cast_to=Workspace,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -627,7 +786,7 @@ class _AsyncChecks:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> Union["CheckDecision", None]:
+    async def create(self, *, subject: Dict[str, Any], action: str, shared: List[Dict[str, Any]] = NOT_GIVEN, cost: int = NOT_GIVEN, mode: Literal["consume", "preview", "reserve"] = NOT_GIVEN, ttl_seconds: int = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> CheckDecision:
         """Check whether a subject may act
 
         Asks whether `subject` may do `action` at `cost`, given every enabled limit that applies. In `consume` mode, it also counts the use. Every decision returns 200, whether it's allowed or refused, so read `allowed`. `limits` shows what's left on each limit, and `retryAfterSeconds` says when to try again. With an `Idempotency-Key` header, a retried check gets the same decision for an hour and counts only once. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
@@ -635,18 +794,25 @@ class _AsyncChecks:
             {"method": "post", "path": "/checks", "query": [], "body": True, "names": {"subject": "subject", "shared": "shared", "action": "action", "cost": "cost", "mode": "mode", "ttl_seconds": "ttlSeconds"}},
             {},
             {"subject": subject, "shared": shared, "action": action, "cost": cost, "mode": mode, "ttl_seconds": ttl_seconds},
-            request_options,
+            cast_to=CheckDecision,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def recent(self, *, subject: str = NOT_GIVEN, refused: Literal["true", "false"] = NOT_GIVEN, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "RecentChecks":
-        """List recent checks
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject: str = NOT_GIVEN, refused: Literal["true", "false"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[Check]:
+        """List checks
 
-        Lists the checks of the last 3 days, newest first, with every subject each one named and whether Limitry allowed it. A refused check says whose budget refused it. Name a `subject` as `kind:id` for only the checks that named it, or set `refused` for only refused ones. Limitry keeps the last 3 days, and at most 100,000 checks in each environment. Results come a page at a time."""
-        return await self._client._call(
-            {"method": "get", "path": "/checks/recent", "query": ["subject", "refused", "limit", "cursor"], "body": False, "names": {"subject": "subject", "refused": "refused", "limit": "limit", "cursor": "cursor"}},
+        Lists the checks of the last 3 days, newest first, with every subject each one named and whether Limitry allowed it. A refused check says whose budget refused it. Name a `subject` as `kind:id` for only the checks that named it, or set `refused` for only refused ones. Send `before` to start from a moment. Limitry keeps the last 3 days, and at most 100,000 checks in each environment. Results come a page at a time.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
+            {"method": "get", "path": "/checks", "query": ["limit", "cursor", "before", "subject", "refused"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "subject": "subject", "refused": "refused"}},
             {},
-            {"subject": subject, "refused": refused, "limit": limit, "cursor": cursor},
-            request_options,
+            {"limit": limit, "cursor": cursor, "before": before, "subject": subject, "refused": refused},
+            item=Check,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -654,7 +820,7 @@ class _AsyncLimitsCredits:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Credit":
+    async def create(self, limit_id: Union[str, int], *, subject: Dict[str, Any], amount: int, note: str = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Credit:
         """Add credits to a balance
 
         Adds `amount` credits to one subject's balance, on a limit whose window is `total`. A negative `amount` takes credits back, such as after a refund or a chargeback, and needs a `note` saying why. The balance can go below zero, and Limitry then refuses checks until you add more credits. Owners, admins and workspace API keys can add credits. An agent connected through MCP asks a person instead, through the `limit.credit` approval. Limitry keeps a credit's `Idempotency-Key` forever, so never reuse one for a new credit."""
@@ -662,18 +828,38 @@ class _AsyncLimitsCredits:
             {"method": "post", "path": "/limits/{limitId}/credits", "query": [], "body": True, "names": {"subject": "subject", "amount": "amount", "note": "note"}},
             {"limitId": limit_id},
             {"subject": subject, "amount": amount, "note": note},
-            request_options,
+            cast_to=Credit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def list(self, limit_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "CreditPage":
+    async def get(self, limit_id: Union[str, int], credit_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Credit:
+        """Get a credit
+
+        Returns one credit added to a subject's balance on this limit."""
+        return await self._client._call(
+            {"method": "get", "path": "/limits/{limitId}/credits/{creditId}", "query": [], "body": False, "names": {}},
+            {"limitId": limit_id, "creditId": credit_id},
+            {},
+            cast_to=Credit,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+    def list(self, limit_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, subject_id: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[Credit]:
         """List a balance's credits
 
-        Lists the credits added to subjects' balances on this limit, including any taken back, newest first. Page through them with the opaque `nextCursor`. `before` starts from a moment, and `subjectId` keeps one subject's credits."""
-        return await self._client._call(
+        Lists the credits added to subjects' balances on this limit, including any taken back, newest first. Page through them with the opaque `nextCursor`. `before` starts from a moment, and `subjectId` keeps one subject's credits.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/limits/{limitId}/credits", "query": ["limit", "cursor", "before", "subjectId"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "subject_id": "subjectId"}},
             {"limitId": limit_id},
             {"limit": limit, "cursor": cursor, "before": before, "subject_id": subject_id},
-            request_options,
+            item=Credit,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -682,7 +868,7 @@ class _AsyncLimits:
         self._client = client
         self.credits = _AsyncLimitsCredits(client)
 
-    async def archive(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> None:
+    async def archive(self, limit_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Archive a limit
 
         Archives a limit, so checks stop enforcing it at once and it leaves the list. Archiving erases nothing. Limitry keeps the limit's usage history and credits, and `POST /v1/limits/{limitId}/restore` brings it back. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -690,10 +876,13 @@ class _AsyncLimits:
             {"method": "post", "path": "/limits/{limitId}/archive", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def create(self, *, subject: Dict[str, Any], amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], name: str = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    async def create(self, *, subject: Dict[str, Any], amount: int, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"], name: str = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Create a limit
 
         Creates a limit on how much a subject may use per window, such as 200 cents a month for every `user`. You only need to send `subject.kind`, `amount` and `window`. `action` defaults to every action (`*`), `unit` to units, and `name` to the sentence the limit reads as. The next check enforces the new limit. You can't change a limit's subject, action, unit, window, every, start or rolling after you create it. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -701,10 +890,13 @@ class _AsyncLimits:
             {"method": "post", "path": "/limits", "query": [], "body": True, "names": {"name": "name", "subject": "subject", "action": "action", "amount": "amount", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "enabled": "enabled", "fail_mode": "failMode"}},
             {},
             {"name": name, "subject": subject, "action": action, "amount": amount, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "enabled": enabled, "fail_mode": fail_mode},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def get(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Limit":
+    async def get(self, limit_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Get a limit
 
         Returns one limit, with who it applies to, its action, its amount and its window."""
@@ -712,21 +904,27 @@ class _AsyncLimits:
             {"method": "get", "path": "/limits/{limitId}", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
-            request_options,
+            cast_to=Limit,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, subject_kind: str = NOT_GIVEN, action: str = NOT_GIVEN, archived: Literal["true", "false"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, subject_kind: str = NOT_GIVEN, action: str = NOT_GIVEN, archived: Literal["true", "false"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[Limit]:
         """List limits
 
-        Lists this environment's active limits, newest first. With `archived=true`, it lists the archived ones instead. Filter by `subjectKind` and `action`, and page through the results with the opaque `nextCursor` token."""
-        return await self._client._call(
+        Lists this environment's active limits, newest first. With `archived=true`, it lists the archived ones instead. Filter by `subjectKind` and `action`, and page through the results with the opaque `nextCursor` token.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/limits", "query": ["limit", "cursor", "subjectKind", "action", "archived"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "subject_kind": "subjectKind", "action": "action", "archived": "archived"}},
             {},
             {"limit": limit, "cursor": cursor, "subject_kind": subject_kind, "action": action, "archived": archived},
-            request_options,
+            item=Limit,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def restore(self, limit_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Limit":
+    async def restore(self, limit_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Restore an archived limit
 
         Brings an archived limit back. Checks enforce it again if it's enabled. The API refuses it while an active limit has the same name. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -734,21 +932,27 @@ class _AsyncLimits:
             {"method": "post", "path": "/limits/{limitId}/restore", "query": [], "body": False, "names": {}},
             {"limitId": limit_id},
             {},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def sync(self, *, limits: List[Any], archive_missing: bool = NOT_GIVEN, preview: bool = NOT_GIVEN, source: str = NOT_GIVEN, kinds: List[Dict[str, Any]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "LimitSyncResult":
+    async def sync(self, *, limits: List[Any], archive_missing: bool = NOT_GIVEN, dry_run: bool = NOT_GIVEN, source: str = NOT_GIVEN, kinds: List[Dict[str, Any]] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> LimitSyncResult:
         """Sync limits from a list
 
-        Makes the environment's limits match the list in `limits`, pairing them up by name. It creates the limits that are missing and changes the ones that differ, where an omitted field means its default. With `archiveMissing`, it also archives the active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list before writing anything. If any entry has a problem, nothing changes, and the 400 lists each problem in `details`. Otherwise Limitry writes every change at once. You can't change a limit's subject, action, unit, window, every, start or rolling under the same name, so rename the entry to do that. With `preview`, it returns what it would do without writing anything. What a sync sets is locked in the app until the next sync, which names its `source`. This is the call behind `limitry sync`, for keeping your limits in a file in your repository. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        Makes the environment's limits match the list in `limits`, pairing them up by name. It creates the limits that are missing and changes the ones that differ, where an omitted field means its default. With `archiveMissing`, it also archives the active limits the list doesn't name. Running it twice changes nothing the second time. Limitry checks the whole list before writing anything. If any entry has a problem, nothing changes, and the 400 lists each problem in `details`. Otherwise Limitry writes every change at once. You can't change a limit's subject, action, unit, window, every, start or rolling under the same name, so rename the entry to do that. With `dryRun`, it returns what it would do without writing anything. What a sync sets is locked in the app until the next sync, which names its `source`. This is the call behind `limitry sync`, for keeping your limits in a file in your repository. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
         return await self._client._call(
-            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "preview": "preview", "source": "source", "kinds": "kinds"}},
+            {"method": "post", "path": "/limits/sync", "query": [], "body": True, "names": {"limits": "limits", "archive_missing": "archiveMissing", "dry_run": "dryRun", "source": "source", "kinds": "kinds"}},
             {},
-            {"limits": limits, "archive_missing": archive_missing, "preview": preview, "source": source, "kinds": kinds},
-            request_options,
+            {"limits": limits, "archive_missing": archive_missing, "dry_run": dry_run, "source": source, "kinds": kinds},
+            cast_to=LimitSyncResult,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, amount: int = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, subject: Dict[str, Any] = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, override: Dict[str, Any] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Limit":
+    async def update(self, limit_id: Union[str, int], *, name: str = NOT_GIVEN, amount: int = NOT_GIVEN, enabled: bool = NOT_GIVEN, fail_mode: Literal["open", "closed"] = NOT_GIVEN, subject: Dict[str, Any] = NOT_GIVEN, action: str = NOT_GIVEN, unit: str = NOT_GIVEN, window: Literal["minute", "hour", "day", "week", "month", "year", "total", "concurrent"] = NOT_GIVEN, every: int = NOT_GIVEN, start: Literal["calendar", "billing_date", "first_use"] = NOT_GIVEN, rolling: bool = NOT_GIVEN, override: Dict[str, Any] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Limit:
         """Change a limit
 
         Changes a limit's name, amount, fail mode or whether it's enabled. Checks use the new rule at once. You can't change a limit's subject, action, unit, window, every, start or rolling, and a request that tries gets a 400. To count something different, create a new limit and archive this one. A limit a sync sets (its `setIn`) changes only through the sync. A request to change one gets a 409 that names where the sync came from, unless it sends `override` with a reason. An override lasts until the next sync. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -756,7 +960,10 @@ class _AsyncLimits:
             {"method": "patch", "path": "/limits/{limitId}", "query": [], "body": True, "names": {"name": "name", "amount": "amount", "enabled": "enabled", "fail_mode": "failMode", "subject": "subject", "action": "action", "unit": "unit", "window": "window", "every": "every", "start": "start", "rolling": "rolling", "override": "override"}},
             {"limitId": limit_id},
             {"name": name, "amount": amount, "enabled": enabled, "fail_mode": fail_mode, "subject": subject, "action": action, "unit": unit, "window": window, "every": every, "start": start, "rolling": rolling, "override": override},
-            request_options,
+            cast_to=Limit,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -764,18 +971,21 @@ class _AsyncReservations:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def commit(self, reservation_id: Union[str, int], *, cost: int, request_options: Optional[RequestOptions] = None) -> "Reservation":
+    async def commit(self, reservation_id: Union[str, int], *, cost: int, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
         """Commit a reservation
 
-        Commits a reservation with the amount actually used (`cost`). If `cost` is less than the amount reserved, the rest goes back at once. If it's more, Limitry charges the whole `cost`, since the work happened. A commit up to 24 hours after the reservation expired still charges `cost`. Repeating a commit with the same `cost` returns the same result, and a different `cost` gets a 400. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
+        Commits a reservation with the amount actually used (`cost`). If `cost` is less than the amount reserved, the rest goes back at once. If it's more, Limitry charges the whole `cost`, since the work happened. A commit up to 24 hours after the reservation expired still charges `cost`. Repeating a commit with the same `cost` returns the same result, and a different `cost` gets a 400. Committing a released reservation gets a 409. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
         return await self._client._call(
             {"method": "post", "path": "/reservations/{reservationId}/commit", "query": [], "body": True, "names": {"cost": "cost"}},
             {"reservationId": reservation_id},
             {"cost": cost},
-            request_options,
+            cast_to=Reservation,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def extend(self, reservation_id: Union[str, int], *, ttl_seconds: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "Reservation":
+    async def extend(self, reservation_id: Union[str, int], *, ttl_seconds: int = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
         """Extend a reservation
 
         Keeps a reservation open for longer work, so it expires `ttlSeconds` from now. Call it again as a heartbeat while the work runs. You can only extend a reservation that's still held. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
@@ -783,10 +993,26 @@ class _AsyncReservations:
             {"method": "post", "path": "/reservations/{reservationId}/extend", "query": [], "body": True, "names": {"ttl_seconds": "ttlSeconds"}},
             {"reservationId": reservation_id},
             {"ttl_seconds": ttl_seconds},
-            request_options,
+            cast_to=Reservation,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def release(self, reservation_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "Reservation":
+    async def get(self, reservation_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
+        """Get a reservation
+
+        Returns a reservation as it stands: held, committed, released or expired, with what it reserved and what it finally used. A reservation past its expiry that nobody committed or released reads as expired. Reading it changes nothing."""
+        return await self._client._call(
+            {"method": "get", "path": "/reservations/{reservationId}", "query": [], "body": False, "names": {}},
+            {"reservationId": reservation_id},
+            {},
+            cast_to=Reservation,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+    async def release(self, reservation_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Reservation:
         """Release a reservation
 
         Gives the whole reservation back, because the work didn't happen. Repeating a release within 24 hours returns the same result. You can't release a reservation you've already committed. We cache its API key check briefly for speed. A revoked key can keep working here for up to 60 seconds."""
@@ -794,26 +1020,37 @@ class _AsyncReservations:
             {"method": "post", "path": "/reservations/{reservationId}/release", "query": [], "body": False, "names": {}},
             {"reservationId": reservation_id},
             {},
-            request_options,
+            cast_to=Reservation,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+
+class _AsyncSubjectsNames:
+    def __init__(self, client: "AsyncClient") -> None:
+        self._client = client
+
+    async def delete(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> None:
+        """Erase a subject's name and labels
+
+        Erases the name and labels you gave a subject. Its limits, usage and billing date stay, because they're kept by its ID. Use it when one of your users asks you to delete their data. Erasing a subject with no name or labels succeeds too. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        return await self._client._call(
+            {"method": "delete", "path": "/subjects/{subjectKind}/{subjectId}/names", "query": [], "body": False, "names": {}},
+            {"subjectKind": subject_kind, "subjectId": subject_id},
+            {},
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
 class _AsyncSubjects:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
+        self.names = _AsyncSubjectsNames(client)
 
-    async def delete(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "SubjectNamesDeleted":
-        """Erase a subject's name and labels
-
-        Erases the name and labels you gave a subject. Its limits, usage and billing date stay, because they're kept by its ID. Use it when one of your users asks you to delete their data. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
-        return await self._client._call(
-            {"method": "delete", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": False, "names": {}},
-            {"subjectKind": subject_kind, "subjectId": subject_id},
-            {},
-            request_options,
-        )
-
-    async def get(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "SubjectDetail":
+    async def get(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectDetail:
         """Get a subject
 
         Returns a subject: its billing date, the day its `billing_date` limits start each new period, its name and labels if you gave it any, its budgets, and the subjects it's checked with. A subject is one of yours, such as a user, a team or an agent. It exists once a check names it. Its links say what was spent within each budget this period: within another subject's budget, or another subject within its own."""
@@ -821,10 +1058,12 @@ class _AsyncSubjects:
             {"method": "get", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": False, "names": {}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
             {},
-            request_options,
+            cast_to=SubjectDetail,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def import_(self, *, items: List[Dict[str, Any]], request_options: Optional[RequestOptions] = None) -> "SubjectImportResult":
+    async def import_(self, *, items: List[Dict[str, Any]], idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectImportResult:
         """Name many subjects
 
         Sets the name and labels of up to 1,000 subjects at once, such as when you first connect your user list. Each item works like updating that subject's name and labels: a field you leave out stays as it is, and null clears it. Limitry checks every item before it saves any, so a bad item saves nothing. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -832,21 +1071,28 @@ class _AsyncSubjects:
             {"method": "post", "path": "/subjects/import", "query": [], "body": True, "names": {"items": "items"}},
             {},
             {"items": items},
-            request_options,
+            cast_to=SubjectImportResult,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def list(self, *, kind: str = NOT_GIVEN, label: str = NOT_GIVEN, q: str = NOT_GIVEN, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectList":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, kind: str = NOT_GIVEN, label: str = NOT_GIVEN, q: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[SubjectListItem]:
         """List subjects
 
-        Lists every subject your checks have named in this environment, and every one you named, most recently checked first. Filter by `kind` or by one `label`, and search the name or the ID with `q`. Results come a page at a time."""
-        return await self._client._call(
-            {"method": "get", "path": "/subjects", "query": ["kind", "label", "q", "limit", "cursor"], "body": False, "names": {"kind": "kind", "label": "label", "q": "q", "limit": "limit", "cursor": "cursor"}},
+        Lists every subject your checks have named in this environment, and every one you named, most recently checked first. Filter by `kind` or by one `label`, and search the name or the ID with `q`. Results come a page at a time.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
+            {"method": "get", "path": "/subjects", "query": ["limit", "cursor", "kind", "label", "q"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "kind": "kind", "label": "label", "q": "q"}},
             {},
-            {"kind": kind, "label": label, "q": q, "limit": limit, "cursor": cursor},
-            request_options,
+            {"limit": limit, "cursor": cursor, "kind": kind, "label": label, "q": q},
+            item=SubjectListItem,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def reset(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, limit_id: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectResetResult":
+    async def reset(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, limit_id: str = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectResetResult:
         """Reset a subject's limits
 
         Resets one limit on a subject now, or every limit on it. Send `limitId` for one limit, or `{}` for all of them. Use it for goodwill, a promotion or support. The schedule doesn't move, so the next reset still happens when it normally would. A balance goes back to its amount, and the reset skips concurrent limits. With an Idempotency-Key, a repeated request resets only once. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
@@ -854,29 +1100,37 @@ class _AsyncSubjects:
             {"method": "post", "path": "/subjects/{subjectKind}/{subjectId}/reset", "query": [], "body": True, "names": {"limit_id": "limitId"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
             {"limit_id": limit_id},
-            request_options,
+            cast_to=SubjectResetResult,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def set(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, name: Optional[str] = NOT_GIVEN, labels: Optional[Dict[str, str]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "SubjectNamesView":
-        """Name a subject
+    async def standing(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, shared: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> SubjectStanding:
+        """Get where a subject stands
 
-        Sets a subject's name, its labels, or both. Both are optional, and checks never need them. A field you leave out stays as it is, and null clears it. Labels you send replace the subject's labels. `DELETE /v1/subjects/{subjectKind}/{subjectId}` erases them. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        Returns where one subject stands on every enabled limit, exact as of now. It covers the subject's own limits and the limits on its shared subjects. List the shared subjects in `shared`, such as `team:team_42`. Each limit shows what's used, what's left and when it resets. Use it to show your users where they stand. Call it from your server with your key, never from a browser. It isn't a check, so it counts nothing. A subject with no limits returns an empty `limits` list."""
         return await self._client._call(
-            {"method": "put", "path": "/subjects/{subjectKind}/{subjectId}/names", "query": [], "body": True, "names": {"name": "name", "labels": "labels"}},
+            {"method": "get", "path": "/subjects/{subjectKind}/{subjectId}/standing", "query": ["shared"], "body": False, "names": {"shared": "shared"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
-            {"name": name, "labels": labels},
-            request_options,
+            {"shared": shared},
+            cast_to=SubjectStanding,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, billing_date: str, request_options: Optional[RequestOptions] = None) -> "Subject":
-        """Set a subject's billing date
+    async def update(self, subject_kind: Union[str, int], subject_id: Union[str, int], *, billing_anchor_at: str = NOT_GIVEN, name: Optional[str] = NOT_GIVEN, labels: Optional[Dict[str, str]] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Subject:
+        """Update a subject
 
-        Sets the date a subject's `billing_date` limits count their periods from. Usually this is the subscription's start date, set from your billing system's webhook. The subject's allowance then resets on its own billing day, and a monthly limit still resets monthly on an annual plan. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
+        Sets a subject's billing date, its name, its labels, or any of them. A field you leave out stays as it is, and null clears a name or labels. Labels you send replace the subject's labels. The billing date is the moment the subject's `billing_date` limits count their periods from, usually the subscription's start, set from your billing system's webhook. The subject's allowance then resets on its own billing day, and a monthly limit still resets monthly on an annual plan. A name and labels are optional, and checks never need them. With a personal access token, only owners and admins can call this. A workspace API key with this scope can."""
         return await self._client._call(
-            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"billing_date": "billingDate"}},
+            {"method": "patch", "path": "/subjects/{subjectKind}/{subjectId}", "query": [], "body": True, "names": {"billing_anchor_at": "billingAnchorAt", "name": "name", "labels": "labels"}},
             {"subjectKind": subject_kind, "subjectId": subject_id},
-            {"billing_date": billing_date},
-            request_options,
+            {"billing_anchor_at": billing_anchor_at, "name": name, "labels": labels},
+            cast_to=Subject,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -884,7 +1138,7 @@ class _AsyncUsage:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def overview(self, *, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: Optional[int] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageOverview":
+    async def overview(self, *, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: Optional[int] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UsageOverview:
         """Get every limit's usage at once
 
         Returns every active limit's usage in one answer, for a question that names no limit. Each limit comes with its name, unit, amount and window, its `total` (units used, checks allowed and refused) and its top subjects. By default, it covers each limit's current window, with exact amounts. For a past range, send `period`, such as `last_month`, or `from` and `to`. The totals and subjects then come from history, and each subject's `remaining` is null. Set `sort` to `refused` to list only the subjects each limit refused, the most refused first. A balance also lists the credits added to it in the range. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
@@ -892,10 +1146,12 @@ class _AsyncUsage:
             {"method": "get", "path": "/usage/overview", "query": ["period", "from", "to", "sort", "top"], "body": False, "names": {"period": "period", "from_": "from", "to": "to", "sort": "sort", "top": "top"}},
             {},
             {"period": period, "from_": from_, "to": to, "sort": sort, "top": top},
-            request_options,
+            cast_to=UsageOverview,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def query(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, subject: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageSeries":
+    async def query(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, subject: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, granularity: Literal["hour", "day"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UsageSeries:
         """Get a limit's usage over time
 
         Returns one limit's usage over time: the units used, and the checks allowed and refused, with the range's `total` beside the buckets. It covers every subject, or one subject named in `subject` as `kind:id`. Name the limit by `limitId` or `limitName`. Choose the range with `period` (such as `last_month`) or `from` and `to`. Usage comes in hourly or daily buckets in UTC, and the response includes every bucket in the range. It can be up to about a minute behind live checks. By default, it covers the last 30 days, by day. A request returns at most 2,000 buckets. Usage older than your plan's history isn't returned."""
@@ -903,29 +1159,22 @@ class _AsyncUsage:
             {"method": "get", "path": "/usage", "query": ["limitId", "limitName", "subject", "period", "from", "to", "granularity"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "subject": "subject", "period": "period", "from_": "from", "to": "to", "granularity": "granularity"}},
             {},
             {"limit_id": limit_id, "limit_name": limit_name, "subject": subject, "period": period, "from_": from_, "to": to, "granularity": granularity},
-            request_options,
+            cast_to=UsageSeries,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def standing(self, *, subject: str, shared: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageStanding":
-        """Get where a subject stands
-
-        Returns where one subject stands on every enabled limit, exact as of now. It covers the subject's own limits and the limits on its shared subjects. Name the subject as `kind:id`, such as `user:usr_123`, and list its shared subjects in `shared`, such as `team:team_42`. Each limit shows what's used, what's left and when it resets. Use it to show your users where they stand. Call it from your server with your key, never from a browser. It isn't a check, so it counts nothing. A subject with no limits returns an empty `limits` list."""
-        return await self._client._call(
-            {"method": "get", "path": "/usage/standing", "query": ["subject", "shared"], "body": False, "names": {"subject": "subject", "shared": "shared"}},
-            {},
-            {"subject": subject, "shared": shared},
-            request_options,
-        )
-
-    async def subjects(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, limit: int = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "UsageBySubject":
+    async def subjects(self, *, limit_id: str = NOT_GIVEN, limit_name: str = NOT_GIVEN, period: Literal["today", "this_week", "last_week", "this_month", "last_month"] = NOT_GIVEN, from_: str = NOT_GIVEN, to: str = NOT_GIVEN, sort: Literal["used", "refused"] = NOT_GIVEN, top: int = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UsageBySubject:
         """List who is using a limit
 
         Lists a limit's subjects in its current window, most used first. Each one shows the units used, what's left and how many checks the limit refused. The amounts are exact, but a subject first checked in the last minute may not appear yet. For a `concurrent` limit, it lists the slots each subject holds now, among the subjects checked in the last hour. Name the limit by `limitId` or `limitName`. For a past range, send `period`, such as `last_month`, or `from` and `to`. The subjects are then ranked by their use in that range, from history. Each one's `remaining` is then null. Set `sort` to `refused` to list the most refused first. The current window is whole on every plan. A past range reaches no further back than your plan's history."""
         return await self._client._call(
-            {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limitName", "period", "from", "to", "sort", "limit"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "period": "period", "from_": "from", "to": "to", "sort": "sort", "limit": "limit"}},
+            {"method": "get", "path": "/usage/subjects", "query": ["limitId", "limitName", "period", "from", "to", "sort", "top"], "body": False, "names": {"limit_id": "limitId", "limit_name": "limitName", "period": "period", "from_": "from", "to": "to", "sort": "sort", "top": "top"}},
             {},
-            {"limit_id": limit_id, "limit_name": limit_name, "period": period, "from_": from_, "to": to, "sort": sort, "limit": limit},
-            request_options,
+            {"limit_id": limit_id, "limit_name": limit_name, "period": period, "from_": from_, "to": to, "sort": sort, "top": top},
+            cast_to=UsageBySubject,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -933,7 +1182,7 @@ class _AsyncUser:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def me(self, *, request_options: Optional[RequestOptions] = None) -> "UserMe":
+    async def me(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> UserMe:
         """Get the current user
 
         Returns the user the personal access token belongs to, and their workspace memberships. Use it as a smoke test for an integration ("who am I?")."""
@@ -941,10 +1190,12 @@ class _AsyncUser:
             {"method": "get", "path": "/user/me", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=UserMe,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def revoke_token(self, *, request_options: Optional[RequestOptions] = None) -> None:
+    async def revoke_token(self, *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> None:
         """Revoke the token making this request
 
         Revokes the personal access token that makes the request. Use it to sign out from a script or the CLI (`logout`). The token stops working immediately. Your other tokens keep working."""
@@ -952,7 +1203,9 @@ class _AsyncUser:
             {"method": "delete", "path": "/user/token", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -960,15 +1213,17 @@ class _AsyncWorkspaceApprovalActions:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    async def list(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalActionPage:
         """List the actions you can ask approval for
 
-        Lists the actions a credential can't take itself but can ask a person to approve. Each action comes with its input as a JSON Schema, who can approve it and whether it creates a secret."""
+        Lists the actions a credential can't take itself but can ask a person to approve. Each action comes with its input as a JSON Schema (`inputSchema`), who can approve it and whether it creates a secret. Every action fits on one page, so `nextCursor` is null."""
         return await self._client._call(
             {"method": "get", "path": "/workspace/approval-actions", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=ApprovalActionPage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -976,7 +1231,7 @@ class _AsyncWorkspaceApprovalRequests:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def create(self, *, action: str, input: Dict[str, Any], reason: str, request_options: Optional[RequestOptions] = None) -> "ApprovalRequest":
+    async def create(self, *, action: str, input: Dict[str, Any], reason: str, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalRequest:
         """Ask a person to approve an action
 
         Creates a request for an action you can't take yourself and notifies everyone who can approve it. The actions you can ask for are in approval-actions. Show the person `approveUrl` and why you need the action. Then check the request until a person decides. A request expires after 24 hours. A personal access token or an app a person connected can ask. A workspace API key can't."""
@@ -984,29 +1239,37 @@ class _AsyncWorkspaceApprovalRequests:
             {"method": "post", "path": "/workspace/approval-requests", "query": [], "body": True, "names": {"action": "action", "input": "input", "reason": "reason"}},
             {},
             {"action": action, "input": input, "reason": reason},
-            request_options,
+            cast_to=ApprovalRequest,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def get(self, request_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "ApprovalRequest":
+    async def get(self, approval_request_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalRequest:
         """Check an approval request
 
         Returns an approval request you created, with its status. A `pending` request is waiting for a person to decide. A `completed` request's action ran, and `result` holds the outcome. An `approved` request is waiting for the CLI to redeem it. A request can also be `denied`, `failed` or `expired`."""
         return await self._client._call(
-            {"method": "get", "path": "/workspace/approval-requests/{requestId}", "query": [], "body": False, "names": {}},
-            {"requestId": request_id},
+            {"method": "get", "path": "/workspace/approval-requests/{approvalRequestId}", "query": [], "body": False, "names": {}},
+            {"approvalRequestId": approval_request_id},
             {},
-            request_options,
+            cast_to=ApprovalRequest,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def redeem(self, request_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    async def redeem(self, approval_request_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> ApprovalRedemption:
         """Redeem an approved request
 
         Runs an approved action that creates a secret, and returns the secret. The action runs only once. Only the personal access token that asked can redeem it. The CLI writes the secret to a file without printing it."""
         return await self._client._call(
-            {"method": "post", "path": "/workspace/approval-requests/{requestId}/redeem", "query": [], "body": False, "names": {}},
-            {"requestId": request_id},
+            {"method": "post", "path": "/workspace/approval-requests/{approvalRequestId}/redeem", "query": [], "body": False, "names": {}},
+            {"approvalRequestId": approval_request_id},
             {},
-            request_options,
+            cast_to=ApprovalRedemption,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1014,15 +1277,19 @@ class _AsyncWorkspaceAuditEvents:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, action: str = NOT_GIVEN, actor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "AuditEventPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, action: str = NOT_GIVEN, actor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[AuditEvent]:
         """List workspace audit events
 
-        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. `before` starts from a moment. `action` keeps one kind of event, and `actor` what one person, key or token did. With a personal access token, only workspace owners and admins can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself."""
-        return await self._client._call(
+        Lists the workspace's audit events, newest first. Paginate with the opaque `nextCursor` token. `limit` takes 1 to 100 and defaults to 25. `before` starts from a moment. `action` keeps one kind of event, and `actor` what one person, key or token did. With a personal access token, only workspace owners and admins can call this, as with the audit page in the app. A workspace API key always can, because it acts as the workspace itself.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/audit-events", "query": ["limit", "cursor", "before", "action", "actor"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "action": "action", "actor": "actor"}},
             {},
             {"limit": limit, "cursor": cursor, "before": before, "action": action, "actor": actor},
-            request_options,
+            item=AuditEvent,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1030,15 +1297,17 @@ class _AsyncWorkspaceEventTypes:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, request_options: Optional[RequestOptions] = None) -> Dict[str, Any]:
+    async def list(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> EventTypePage:
         """List event types
 
-        Lists every workspace event a webhook endpoint can subscribe to, and what each one means. Pass some as `eventTypes` when you add an endpoint. An endpoint without a list receives every event."""
+        Lists every workspace event a webhook endpoint can subscribe to, and what each one means. Pass some as `eventTypes` when you add an endpoint. An endpoint without a list receives every event. Every type fits on one page, so `nextCursor` is null."""
         return await self._client._call(
             {"method": "get", "path": "/workspace/event-types", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=EventTypePage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1046,15 +1315,19 @@ class _AsyncWorkspaceInvitations:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "InvitationPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[Invitation]:
         """List pending invitations
 
-        Lists the invitations that are not yet accepted, declined or expired, newest first. With a personal credential, only owners and admins can call this, as in the app. A workspace API key always can. Paginate with the opaque `nextCursor`."""
-        return await self._client._call(
+        Lists the invitations that are not yet accepted, declined or expired, newest first. With a personal credential, only owners and admins can call this, as in the app. A workspace API key always can. Paginate with the opaque `nextCursor`.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/invitations", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
             {},
             {"limit": limit, "cursor": cursor},
-            request_options,
+            item=Invitation,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1062,15 +1335,37 @@ class _AsyncWorkspaceMembers:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "MemberPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[Member]:
         """List workspace members
 
-        Lists the workspace's members and their roles, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Invite members, remove them and give them roles in the app."""
-        return await self._client._call(
+        Lists the workspace's members and their roles, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Invite members, remove them and give them roles in the app.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/members", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
             {},
             {"limit": limit, "cursor": cursor},
-            request_options,
+            item=Member,
+            extra_headers=extra_headers,
+            timeout=timeout,
+        )
+
+
+class _AsyncWorkspacePlanUsage:
+    def __init__(self, client: "AsyncClient") -> None:
+        self._client = client
+
+    async def get(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> PlanUsage:
+        """Get your plan's usage this period
+
+        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. Each entry also says where it stands and where we start refusing new use. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
+        return await self._client._call(
+            {"method": "get", "path": "/workspace/plan-usage", "query": [], "body": False, "names": {}},
+            {},
+            {},
+            cast_to=PlanUsage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1078,15 +1373,19 @@ class _AsyncWorkspaceTeams:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "TeamPage":
+    def list(self, *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[Team]:
         """List teams
 
-        Lists the workspace's teams and their members' user ids, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Create teams and add members to them in the app."""
-        return await self._client._call(
+        Lists the workspace's teams and their members' user ids, newest first. Paginate with the opaque `nextCursor`. `limit` takes 1 to 100 and defaults to 25. Create teams and add members to them in the app.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/teams", "query": ["limit", "cursor"], "body": False, "names": {"limit": "limit", "cursor": "cursor"}},
             {},
             {"limit": limit, "cursor": cursor},
-            request_options,
+            item=Team,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1094,26 +1393,33 @@ class _AsyncWorkspaceWebhookDeliveries:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, status: Literal["pending", "delivered", "failed"] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryPage":
+    def list(self, endpoint_id: Union[str, int], *, limit: int = NOT_GIVEN, cursor: str = NOT_GIVEN, before: str = NOT_GIVEN, status: Literal["pending", "delivered", "failed"] = NOT_GIVEN, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> AsyncPaginator[WebhookDelivery]:
         """List an endpoint's deliveries
 
-        Lists one endpoint's delivery history, newest first. Each entry shows the event's status, attempts and last HTTP status. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. `before` starts from a moment, and `status` keeps one kind of delivery. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
-        return await self._client._call(
+        Lists one endpoint's delivery history, newest first. Each entry shows the delivery's state, its attempts and the last HTTP status code. Payloads aren't included. We keep the history for 30 days. Paginate with the opaque `nextCursor`. `before` starts from a moment, and `status` keeps one kind of delivery. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can.
+
+        ``await`` it for the first page, or ``async for`` over it for every item."""
+        return self._client._page(
             {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries", "query": ["limit", "cursor", "before", "status"], "body": False, "names": {"limit": "limit", "cursor": "cursor", "before": "before", "status": "status"}},
             {"endpointId": endpoint_id},
             {"limit": limit, "cursor": cursor, "before": before, "status": status},
-            request_options,
+            item=WebhookDelivery,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def redeliver(self, endpoint_id: Union[str, int], delivery_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryOutcome":
+    async def redeliver(self, endpoint_id: Union[str, int], delivery_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookDeliveryOutcome:
         """Redeliver an event
 
-        Sends a recorded delivery's event again, as a new delivery. The new delivery gets its own history entry. The event id stays the same, so receivers can deduplicate. Redelivery only works on an enabled endpoint. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
+        Sends a recorded delivery's event again, as a new delivery. The new delivery gets its own history entry. The event id stays the same, so receivers can deduplicate. Redelivery only works on an enabled endpoint. It answers 200 when we attempted the delivery right away, with the endpoint's answer, and 202 when it went to the queue. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
         return await self._client._call(
             {"method": "post", "path": "/workspace/webhook-endpoints/{endpointId}/deliveries/{deliveryId}/redeliver", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id, "deliveryId": delivery_id},
             {},
-            request_options,
+            cast_to=WebhookDeliveryOutcome,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1121,18 +1427,21 @@ class _AsyncWorkspaceWebhookEndpoints:
     def __init__(self, client: "AsyncClient") -> None:
         self._client = client
 
-    async def create(self, *, url: str, description: str = NOT_GIVEN, event_types: List[str] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookEndpointCreated":
+    async def create(self, *, url: str, description: str = NOT_GIVEN, event_types: List[str] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Add a webhook endpoint
 
-        Registers an HTTPS URL to receive the workspace's events. Deliveries use the same signature format as Svix. The response includes the endpoint's signing secret (`whsec_…`). You see it only once, so store it to verify deliveries. The API refuses private hosts and hosts without HTTPS. A workspace can have at most 10 endpoints. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
+        Registers an HTTPS URL to receive the workspace's events. Deliveries use the same signature format as Svix. The response is the new endpoint with its signing secret (`whsec_…`) in `secret`. You see it only once, so store it to verify deliveries. The API refuses private hosts and hosts without HTTPS. A workspace can have at most 10 endpoints. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
         return await self._client._call(
             {"method": "post", "path": "/workspace/webhook-endpoints", "query": [], "body": True, "names": {"url": "url", "description": "description", "event_types": "eventTypes"}},
             {},
             {"url": url, "description": description, "event_types": event_types},
-            request_options,
+            cast_to=WebhookEndpoint,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def delete(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> None:
+    async def delete(self, endpoint_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> None:
         """Remove a webhook endpoint
 
         Deletes the endpoint and its signing secret. All deliveries to the endpoint stop. Its delivery history goes with it. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -1140,10 +1449,12 @@ class _AsyncWorkspaceWebhookEndpoints:
             {"method": "delete", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def enable(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+    async def enable(self, endpoint_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Re-enable a webhook endpoint
 
         Resumes deliveries to an endpoint that stopped after repeated failures. The endpoint keeps its signing secret. Its failure count resets. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -1151,10 +1462,13 @@ class _AsyncWorkspaceWebhookEndpoints:
             {"method": "post", "path": "/workspace/webhook-endpoints/{endpointId}/enable", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            cast_to=WebhookEndpoint,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def get(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+    async def get(self, endpoint_id: Union[str, int], *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Get a webhook endpoint
 
         Returns one endpoint without its signing secret. It shows whether the endpoint is on, its consecutive failures and its last delivery status. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -1162,10 +1476,12 @@ class _AsyncWorkspaceWebhookEndpoints:
             {"method": "get", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            cast_to=WebhookEndpoint,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def list(self, *, request_options: Optional[RequestOptions] = None) -> "WebhookEndpointPage":
+    async def list(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpointPage:
         """List webhook endpoints
 
         Lists the workspace's outgoing webhook endpoints, newest first. The list leaves out their signing secrets. A workspace has at most 10 endpoints, so the list is a single page. Its `nextCursor` is null. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -1173,21 +1489,26 @@ class _AsyncWorkspaceWebhookEndpoints:
             {"method": "get", "path": "/workspace/webhook-endpoints", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
+            cast_to=WebhookEndpointPage,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def test(self, endpoint_id: Union[str, int], *, request_options: Optional[RequestOptions] = None) -> "WebhookDeliveryOutcome":
+    async def test(self, endpoint_id: Union[str, int], *, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookDeliveryOutcome:
         """Send a test event
 
-        Sends a `ping` event to the endpoint, signed like every delivery. Use it to check that an integration verifies and accepts deliveries. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
+        Sends a `ping` event to the endpoint, signed like every delivery. Use it to check that an integration verifies and accepts deliveries. It answers 200 when we attempted the delivery right away, with the endpoint's answer, and 202 when it went to the queue. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
         return await self._client._call(
             {"method": "post", "path": "/workspace/webhook-endpoints/{endpointId}/test", "query": [], "body": False, "names": {}},
             {"endpointId": endpoint_id},
             {},
-            request_options,
+            cast_to=WebhookDeliveryOutcome,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
-    async def update(self, endpoint_id: Union[str, int], *, url: str = NOT_GIVEN, description: Optional[str] = NOT_GIVEN, event_types: Optional[List[str]] = NOT_GIVEN, request_options: Optional[RequestOptions] = None) -> "WebhookEndpoint":
+    async def update(self, endpoint_id: Union[str, int], *, url: str = NOT_GIVEN, description: Optional[str] = NOT_GIVEN, event_types: Optional[List[str]] = NOT_GIVEN, idempotency_key: Optional[str] = None, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> WebhookEndpoint:
         """Update a webhook endpoint
 
         Changes an endpoint's URL, description or event types in place. Only the fields you send change. The endpoint keeps its signing secret, so receivers keep verifying deliveries. A new URL must pass the same checks as on create. It must use HTTPS and can't be a private host. With a personal access token, the workspace's owners and admins can call this, and members on the test side. A workspace API key with this scope can."""
@@ -1195,7 +1516,10 @@ class _AsyncWorkspaceWebhookEndpoints:
             {"method": "patch", "path": "/workspace/webhook-endpoints/{endpointId}", "query": [], "body": True, "names": {"url": "url", "description": "description", "event_types": "eventTypes"}},
             {"endpointId": endpoint_id},
             {"url": url, "description": description, "event_types": event_types},
-            request_options,
+            cast_to=WebhookEndpoint,
+            idempotency_key=idempotency_key,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1208,11 +1532,12 @@ class _AsyncWorkspace:
         self.event_types = _AsyncWorkspaceEventTypes(client)
         self.invitations = _AsyncWorkspaceInvitations(client)
         self.members = _AsyncWorkspaceMembers(client)
+        self.plan_usage = _AsyncWorkspacePlanUsage(client)
         self.teams = _AsyncWorkspaceTeams(client)
         self.webhook_deliveries = _AsyncWorkspaceWebhookDeliveries(client)
         self.webhook_endpoints = _AsyncWorkspaceWebhookEndpoints(client)
 
-    async def get(self, *, request_options: Optional[RequestOptions] = None) -> "Workspace":
+    async def get(self, *, extra_headers: Optional[Mapping[str, str]] = None, timeout: Union[Timeout, NotGiven] = NOT_GIVEN) -> Workspace:
         """Get the current workspace
 
         Returns the workspace the credential acts in. For an API key, that is the key's own workspace. For a personal access token, it is the one named in `X-Workspace`. Use it as a smoke test for an integration ("who am I?")."""
@@ -1220,18 +1545,9 @@ class _AsyncWorkspace:
             {"method": "get", "path": "/workspace", "query": [], "body": False, "names": {}},
             {},
             {},
-            request_options,
-        )
-
-    async def usage(self, *, request_options: Optional[RequestOptions] = None) -> "WorkspaceUsage":
-        """Get your plan's usage this period
-
-        Returns what the workspace used this period, with one entry for each thing its plan counts. Each entry has the plan's limit, or null when there is no limit. Each entry also says where it stands and where we start refusing new use. A period is one month from the workspace's billing date. That date comes from its subscription or, without one, from the day you created the workspace. On an annual plan, the counts still reset every month from the subscription's start."""
-        return await self._client._call(
-            {"method": "get", "path": "/workspace/usage", "query": [], "body": False, "names": {}},
-            {},
-            {},
-            request_options,
+            cast_to=Workspace,
+            extra_headers=extra_headers,
+            timeout=timeout,
         )
 
 
@@ -1253,9 +1569,10 @@ class Limitry(ProductMethods, Client):
         api_key: Optional[str] = None,
         workspace: Optional[str] = None,
         environment: Optional[str] = None,
-        api: Optional[str] = None,
-        timeout: float = 60.0,
+        base_url: Optional[str] = None,
+        timeout: Timeout = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        default_headers: Optional[Mapping[str, str]] = None,
         http_client: Optional[httpx.Client] = None,
     ) -> None:
         super().__init__(
@@ -1263,11 +1580,29 @@ class Limitry(ProductMethods, Client):
             api_key=api_key,
             workspace=workspace,
             environment=environment,
-            api=api,
+            base_url=base_url,
             timeout=timeout,
             max_retries=max_retries,
+            default_headers=default_headers,
             http_client=http_client,
         )
+        self._bind()
+
+    def with_options(
+        self,
+        *,
+        timeout: Union[Timeout, NotGiven] = NOT_GIVEN,
+        max_retries: Union[int, NotGiven] = NOT_GIVEN,
+        default_headers: Optional[Mapping[str, str]] = None,
+    ) -> "Limitry":
+        """The same client with other defaults for the calls made through it:
+        ``client.with_options(timeout=5).workspace.get()``. ``default_headers``
+        are added to the client's. It shares this client's connections, so
+        closing either closes both."""
+        return super().with_options(timeout=timeout, max_retries=max_retries, default_headers=default_headers)
+
+    def _bind(self) -> None:
+        # The resources, on this client (again on a with_options copy).
         self.checks = _Checks(self)
         self.limits = _Limits(self)
         self.reservations = _Reservations(self)
@@ -1295,9 +1630,10 @@ class AsyncLimitry(AsyncProductMethods, AsyncClient):
         api_key: Optional[str] = None,
         workspace: Optional[str] = None,
         environment: Optional[str] = None,
-        api: Optional[str] = None,
-        timeout: float = 60.0,
+        base_url: Optional[str] = None,
+        timeout: Timeout = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        default_headers: Optional[Mapping[str, str]] = None,
         http_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         super().__init__(
@@ -1305,11 +1641,29 @@ class AsyncLimitry(AsyncProductMethods, AsyncClient):
             api_key=api_key,
             workspace=workspace,
             environment=environment,
-            api=api,
+            base_url=base_url,
             timeout=timeout,
             max_retries=max_retries,
+            default_headers=default_headers,
             http_client=http_client,
         )
+        self._bind()
+
+    def with_options(
+        self,
+        *,
+        timeout: Union[Timeout, NotGiven] = NOT_GIVEN,
+        max_retries: Union[int, NotGiven] = NOT_GIVEN,
+        default_headers: Optional[Mapping[str, str]] = None,
+    ) -> "AsyncLimitry":
+        """The same client with other defaults for the calls made through it:
+        ``client.with_options(timeout=5).workspace.get()``. ``default_headers``
+        are added to the client's. It shares this client's connections, so
+        closing either closes both."""
+        return super().with_options(timeout=timeout, max_retries=max_retries, default_headers=default_headers)
+
+    def _bind(self) -> None:
+        # The resources, on this client (again on a with_options copy).
         self.checks = _AsyncChecks(self)
         self.limits = _AsyncLimits(self)
         self.reservations = _AsyncReservations(self)

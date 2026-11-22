@@ -2,6 +2,55 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc17 (2026-11-22)
+
+### Changed
+
+- The Python SDK now returns models, so you read a response's fields as attributes, such as `member.joined_at`.
+
+  - `to_dict()` and `to_json()` give a response back with the API's own field names. A field or value the API adds later is kept and never raises an error.
+  - A list returns its first page, and a `for` loop over it goes through every item. With the async client, `await` gives the first page and `async for` every item.
+  - Every method takes `idempotency_key=`, `extra_headers=` and `timeout=`, in place of `request_options`.
+  - A failure raises a class for its status, such as `NotFoundError` or `RateLimitError`. Each is an `APIError` with `status_code`, `code`, `message`, `request_id`, `details` and `docs`. A network failure raises `APIConnectionError`, and a timeout `APITimeoutError`.
+  - The client takes `base_url=` and `default_headers=`, and reads the base URL from the environment too. An async client also closes with `await client.close()`.
+  - When the API asks to wait before a retry, the SDK now waits up to 60 seconds.
+- The API, both SDKs and the CLI now each follow their own language's conventions, so some names and paths changed.
+
+  In the API:
+
+  - `GET /v1/checks` lists recent checks and takes `before`. It replaces `GET /v1/checks/recent`.
+  - `GET /v1/subjects/{kind}/{id}/standing` shows where a subject stands. It replaces `GET /v1/usage/standing`.
+  - `PATCH /v1/subjects/{kind}/{id}` sets a subject's billing date, name and labels. `DELETE /v1/subjects/{kind}/{id}/names` erases the name and labels, and answers `204`.
+  - A check's decision has no `id`. Its limits name themselves in `limitName`, its `reason` is `{ code, limitId, limitName, subject, message }`, and `reservation` is `null` when there is none.
+  - A recent check's time is `checkedAt`, and `refusedBy` names the limit and the subject.
+  - A subject's billing date is `billingAnchorAt`, and a period's start is `periodStart`, in reports and in the `limit.reached` and `limit.threshold_crossed` webhooks. Those webhooks name the limit in `limitName`.
+  - `GET /v1/usage/subjects` takes `top` and answers `subjects`.
+  - A sync takes and answers `dryRun` in place of `preview`.
+  - Archiving a limit answers `200` with the limit.
+  - A clash with a resource's state answers `409` with the code `conflict`, such as a name that is taken or a limit a sync set. A check that Limitry can't answer right now gets `503` with the code `unavailable` and a `Retry-After` header.
+
+  In the TypeScript SDK:
+
+  - `guard` and `reserve` throw `LimitReachedError` when refused, and `UnavailableError` when Limitry gave no answer and a limit fails closed. Its `reason` says why. Both are `LimitryError`s.
+  - `createLimits` takes `timeout`, in milliseconds, in place of `timeoutMs`.
+  - Each `guard` or `reserve` call also takes `timeout`, `failMode`, `signal` and `idempotencyKey`. A signal stops the check at once, and the work doesn't run.
+
+  In the Python SDK:
+
+  - `guard` and `reserve` raise `LimitReachedError` and `UnavailableError`, under `LimitryError`.
+  - They take `timeout=` (in seconds), `fail_mode=`, `idempotency_key=` and `extra_headers=`.
+  - You set what the work used with `reservation.cost = 7`.
+  - Cancelling an async `guard` or `reserve` stops its check at once.
+
+  In the CLI:
+
+  - `limitry sync --dry-run` replaces `--preview`, and `limitry sync -` reads the file from standard input.
+  - A refused `limitry check` exits with code `5`.
+  - `limitry subjects standing <kind> <id>` replaces `limitry usage standing`, and `limitry checks list` replaces `limitry checks recent`.
+  - `limitry subjects update <kind> <id>` sets a name and labels, and `limitry subjects names delete <kind> <id>` erases them.
+
+  The audit log's Limitry actions are dotted too, such as `subject.billing_date.set` and `limits.copied`. Earlier entries show the new names.
+
 ## 1.0.0rc15 (2026-11-22)
 
 ### Added

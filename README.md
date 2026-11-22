@@ -2,7 +2,7 @@
 
 The Limitry Python SDK puts a limit around costly work in a `with` block: `guard` checks before the block runs, and `reserve` reserves what the work will probably cost, then charges what it actually cost. Every API operation is a typed method too, sync or async.
 
-[![A $2 AI budget for one of your users: three calls are charged, and the next is refused before the AI runs.](https://media.limitry.com/launch/readme-20261117-1555.gif)](https://limitry.com/#demo)
+[![A $2 AI budget for one of your users: three calls are charged, and the next is refused before the AI runs.](https://media.limitry.com/launch/readme-20261122-0258.gif)](https://limitry.com/#demo)
 
 [▶ Watch the 44-second demo](https://limitry.com/#demo)
 
@@ -31,10 +31,10 @@ from limitry import Limitry
 limitry = Limitry()  # reads LIMITRY_API_KEY
 
 with limitry.reserve(
-    subject={"kind": "user", "id": "usr_123"}, action="ai-call", cost=5
+    subject={"kind": "user", "id": "user_123"}, action="ai-call", cost=5
 ) as reservation:
     response = call_model(prompt)
-    reservation.cost(price_cents(response.usage))  # your prices, in cents
+    reservation.cost = price_cents(response.usage)  # your prices, in cents
 ```
 
 Each hold counts until it's charged, so two replies at once can't
@@ -47,20 +47,21 @@ then runs the block only if it's allowed. Here it counts one request to
 your API against a limit of 60 a minute for each key:
 
 ```python
-from limitry import LimitReached, Limitry
+from limitry import LimitReachedError, Limitry
 
 limitry = Limitry()  # reads LIMITRY_API_KEY
 
 try:
     with limitry.guard(subject={"kind": "apikey", "id": "key_42"}, action="api-request"):
         response = handle_request(request)
-except LimitReached as error:
+except LimitReachedError as error:
     print(f"Try again in {error.retry_after_seconds} seconds")
 ```
 
-A refusal raises `LimitReached`. If Limitry can't be reached, each
-limit's fail mode decides: `open` lets the work run, `closed` raises
-`Unavailable`.
+A refusal raises `LimitReachedError`. If Limitry can't answer within
+`timeout` (1.5 seconds by default), each limit's fail mode decides:
+`open` lets the work run, and `closed` raises `UnavailableError`. Both
+errors are a `LimitryError`.
 
 ## Everything else
 
@@ -83,8 +84,9 @@ limitry.limits.create(
 )
 ```
 
-A failure raises `ApiError` with the error's `code`, `message`, `status`
-and `request_id`.
+A failure raises an `APIError` subclass for its status, such as
+`NotFoundError`, with the error's `code`, `message`, `status_code` and
+`request_id`.
 
 ## Links
 

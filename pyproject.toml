@@ -4,14 +4,14 @@ build-backend = "uv_build"
 
 [project]
 name = "limitry"
-version = "1.0.0rc15"
+version = "1.0.0rc17"
 description = "Limitry API client"
 keywords = ["usage-limits", "rate-limiting", "credits", "budgets", "quotas", "python", "sdk", "api-client", "asyncio"]
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
-dependencies = ["httpx>=0.27,<1"]
+dependencies = ["httpx>=0.27,<1", "pydantic>=2,<3"]
 
 [project.urls]
 Homepage = "https://limitry.com/docs/python/"
@@ -22,4 +22,4 @@ Changelog = "https://github.com/limitry/limitry-python/blob/main/CHANGELOG.md"
 module-name = "limitry"
 
 [dependency-groups]
-test = ["httpx==0.28.1", "pytest==9.1.1"]
+test = ["httpx==0.28.1", "pydantic==2.14.4", "pytest==9.1.1"]

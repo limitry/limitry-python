@@ -6,9 +6,9 @@ import pytest
 
 # Signed by signWebhook(secret, "dlv_1", TIMESTAMP, BODY).
 SECRET = "whsec_MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-BODY = '{"id":"evt_1","type":"member.joined","createdAt":"2026-10-11T12:00:00.000Z","data":{"userId":"u_1"}}'
+BODY = '{"id":"evt_1","type":"workspace.member.joined","createdAt":"2026-10-11T12:00:00.000Z","data":{"userId":"usr_1"}}'
 TIMESTAMP = 1791806400
-SIGNATURE = "v1,B/VTHw36Mavru9zh0bs5VFKKPaw3DAis5T7VRXmQj+Q="
+SIGNATURE = "v1,oVzrgMvU8fukZWOmAOTaVDWC9CXz6ae+bdDKZgvv+Sw="
 HEADERS = {
     "webhook-id": "dlv_1",
     "webhook-timestamp": str(TIMESTAMP),
@@ -18,27 +18,25 @@ HEADERS = {
 
 def test_returns_the_event_of_a_delivery_we_signed(sdk):
     event = sdk.verify_webhook(BODY, HEADERS, SECRET, now=TIMESTAMP + 10)
-    assert event == {
-        "id": "evt_1",
-        "type": "member.joined",
-        "createdAt": "2026-10-11T12:00:00.000Z",
-        "data": {"userId": "u_1"},
-    }
+    assert isinstance(event, sdk.WebhookEvent)
+    assert (event.id, event.type, event.data) == ("evt_1", "workspace.member.joined", {"userId": "usr_1"})
+    assert event.created_at.isoformat() == "2026-10-11T12:00:00+00:00"
+    assert event.to_dict(mode="json")["createdAt"].startswith("2026-10-11T12:00:00")
     # Bytes and any header casing work too.
     upper = {k.title(): v for k, v in HEADERS.items()}
-    assert sdk.verify_webhook(BODY.encode(), upper, SECRET, now=TIMESTAMP)["id"] == "evt_1"
+    assert sdk.verify_webhook(BODY.encode(), upper, SECRET, now=TIMESTAMP).id == "evt_1"
 
 
 def test_is_on_both_clients(sdk, names, monkeypatch):
     for cls in (getattr(sdk, names["client"]), getattr(sdk, "Async" + names["client"])):
         client = cls(token="sk_test")
         monkeypatch.setattr("time.time", lambda: TIMESTAMP)
-        assert client.webhooks.verify(BODY, HEADERS, SECRET)["type"] == "member.joined"
+        assert client.webhooks.verify(BODY, HEADERS, SECRET).type == "workspace.member.joined"
 
 
 def test_refuses_altered_bodies_other_secrets_old_deliveries_and_missing_headers(sdk):
     with pytest.raises(sdk.WebhookVerificationError, match="signature"):
-        sdk.verify_webhook(BODY.replace("u_1", "u_2"), HEADERS, SECRET, now=TIMESTAMP)
+        sdk.verify_webhook(BODY.replace("usr_1", "usr_2"), HEADERS, SECRET, now=TIMESTAMP)
     other = "whsec_" + "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY="
     with pytest.raises(sdk.WebhookVerificationError, match="signature"):
         sdk.verify_webhook(BODY, HEADERS, other, now=TIMESTAMP)
@@ -50,4 +48,8 @@ def test_refuses_altered_bodies_other_secrets_old_deliveries_and_missing_headers
 
 def test_accepts_any_of_several_signatures(sdk):
     headers = {**HEADERS, "webhook-signature": f"v1,AAAA {SIGNATURE}"}
-    assert sdk.verify_webhook(BODY, headers, SECRET, now=TIMESTAMP)["id"] == "evt_1"
+    assert sdk.verify_webhook(BODY, headers, SECRET, now=TIMESTAMP).id == "evt_1"
+
+
+def test_its_error_is_the_sdks(sdk, names):
+    assert issubclass(sdk.WebhookVerificationError, getattr(sdk, names["client"] + "Error"))
