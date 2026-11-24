@@ -96,7 +96,10 @@ class PlanLimitError(APIError):
 
 
 class PermissionDeniedError(APIError):
-    """403: the credential may not do this."""
+    """403: the credential may not do this, or its workspace is suspended.
+
+    A suspended workspace's ``code`` is ``workspace_suspended``.
+    """
 
 
 class NotFoundError(APIError):

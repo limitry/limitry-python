@@ -2,6 +2,12 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc19 (2026-11-24)
+
+### Added
+
+- You can now top up a limit that resets, such as a monthly one. Add credits to it as you would to a balance, and they go to the subject's current period. They end when that period resets, and `periodEnd` on the credit says when. What the subject already used still counts: 4,800 used of 5,000, plus a 5,000 top-up, leaves 5,200. In a subject's standing, the new `credited` field says how much this period was topped up. In the app, a limit's ⋮ menu now offers Credits on limits that reset too.
+
 ## 1.0.0rc18 (2026-11-22)
 
 No user-facing changes.

@@ -173,6 +173,27 @@ def test_a_bad_request_is_the_callers_mistake(sdk):
     assert raised.value.status_code == 400 and raised.value.code == "invalid_request"
 
 
+def test_a_suspended_workspace_never_fails_open(sdk):
+    # Staff suspended the workspace (403 workspace_suspended): Limitry
+    # answered, so no fail mode applies, even after an open decision.
+    answers = [httpx.Response(200, json=allowed())]
+    suspended = httpx.Response(
+        403, json={"error": {"code": "workspace_suspended", "message": "This workspace is suspended."}}
+    )
+    limitry, _ = api(sdk, lambda r: answers.pop(0) if answers else suspended)
+    with limitry.guard(subject=USER, action="a"):
+        pass
+    ran = []
+    with pytest.raises(sdk.PermissionDeniedError) as raised:
+        with limitry.guard(subject=USER, action="a"):
+            ran.append(True)
+    assert raised.value.status_code == 403 and raised.value.code == "workspace_suspended"
+    with pytest.raises(sdk.PermissionDeniedError):
+        with limitry.reserve(subject=USER, action="a", cost=1):
+            ran.append(True)
+    assert ran == []
+
+
 def test_reserve_commits_the_reported_cost(sdk):
     limitry, seen = api(
         sdk,

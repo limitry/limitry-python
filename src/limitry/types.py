@@ -11,7 +11,7 @@ from pydantic import Field
 
 from ._models import BaseModel
 
-__all__ = ["UserMe","UserMembership","ErrorEnvelopeErrorDetail","ErrorEnvelopeError","ErrorEnvelope","Workspace","AuditEventPage","AuditEventActor","AuditEventCredential","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalActionPage","ApprovalAction","ApprovalRequestSecret","ApprovalRequest","ApprovalRedemption","PlanUsage","PlanUsageCount","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","EventTypePage","EventType","LimitPage","LimitOverrideFile","LimitOverride","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatchSubject","LimitPatchOverride","LimitPatch","LimitSyncResultUpdatedChangesValue","LimitSyncResultUpdated","LimitSyncResultRestored","LimitSyncResultKinds","LimitSyncResult","LimitSyncInputKind","LimitSyncInput","LimitSyncEntry","Credit","SubjectRef","CreditPage","CreditInputSubject","CreditInput","CheckDecisionReasonSubject","CheckDecisionReason","CheckDecisionReservation","CheckDecision","CheckLimit","CheckRequestShared","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","CheckList","Check","NamedSubjectRef","CheckRefusal","UsageBySubjectRange","UsageBySubjectSubjectSubject","UsageBySubjectSubject","UsageBySubject","UsageSeriesPoint","UsageSeries","UsageTotal","UsageOverviewRange","UsageOverviewLimitSubjectSubject","UsageOverviewLimitSubject","UsageOverviewLimitCreditsLatestSubject","UsageOverviewLimitCreditsLatest","UsageOverviewLimitCredits","UsageOverviewLimit","UsageOverview","SubjectDetail","SubjectBudget","SubjectLink","Subject","SubjectStanding","StandingLimit","SubjectUpdate","SubjectResetResult","SubjectReset","SubjectImportResult","SubjectImport","SubjectImportItem","SubjectList","SubjectListItem","LimitInputParam","LimitInputSubjectParam"]
+__all__ = ["UserMe","UserMembership","ErrorEnvelopeErrorDetail","ErrorEnvelopeError","ErrorEnvelope","Workspace","AuditEventPage","AuditEventActor","AuditEventCredential","AuditEvent","MemberPage","Member","InvitationPage","Invitation","ApprovalActionPage","ApprovalAction","ApprovalRequestSecret","ApprovalRequest","ApprovalRedemption","PlanUsage","PlanUsageCount","PlanUsageOverage","TeamPage","Team","WebhookEndpointPage","WebhookEndpoint","WebhookDeliveryOutcome","WebhookDeliveryPage","WebhookDelivery","EventTypePage","EventType","LimitPage","LimitOverrideFile","LimitOverride","Limit","LimitSubject","LimitInput","LimitInputSubject","LimitPatchSubject","LimitPatchOverride","LimitPatch","LimitSyncResultUpdatedChangesValue","LimitSyncResultUpdated","LimitSyncResultRestored","LimitSyncResultKinds","LimitSyncResult","LimitSyncInputKind","LimitSyncInput","LimitSyncEntry","Credit","SubjectRef","CreditPage","CreditInputSubject","CreditInput","CheckDecisionReasonSubject","CheckDecisionReason","CheckDecisionReservation","CheckDecision","CheckLimit","PlanLimitEnvelopeErrorDetail","PlanLimitEnvelopeError","PlanLimitEnvelope","CheckRequestShared","CheckRequest","CheckSubject","Reservation","ReservationExtend","ReservationCommit","CheckList","Check","NamedSubjectRef","CheckRefusal","UsageBySubjectRange","UsageBySubjectSubjectSubject","UsageBySubjectSubject","UsageBySubject","UsageSeriesPoint","UsageSeries","UsageTotal","UsageOverviewRange","UsageOverviewLimitSubjectSubject","UsageOverviewLimitSubject","UsageOverviewLimitCreditsLatestSubject","UsageOverviewLimitCreditsLatest","UsageOverviewLimitCredits","UsageOverviewLimit","UsageOverview","SubjectDetail","SubjectBudget","SubjectLink","Subject","SubjectStanding","StandingLimit","SubjectUpdate","SubjectResetResult","SubjectReset","SubjectImportResult","SubjectImport","SubjectImportItem","SubjectList","SubjectListItem","LimitInputParam","LimitInputSubjectParam"]
 
 
 class UserMe(BaseModel):
@@ -181,8 +181,8 @@ class PlanUsage(BaseModel):
     """When this period began. Each period starts a month after the last one, counted from the billing date."""
     period_end: datetime = Field(alias="periodEnd")
     """When the counts reset."""
-    state: Literal["within", "grace", "stopped", "over"]
-    """Where the workspace stands, from its most limited count. The order from worst is `stopped`, `grace`, `over`, then `within`."""
+    state: Literal["within", "overage", "grace", "stopped", "over"]
+    """Where the workspace stands, from its most limited count. The order from worst is `stopped`, `grace`, `over`, `overage`, then `within`."""
     counts: List[PlanUsageCount]
     notices: Optional[List[str]] = None
     """Things to know about these numbers, such as some usage being unavailable right now."""
@@ -200,8 +200,28 @@ class PlanUsageCount(BaseModel):
     """The limit for this period. Null means unlimited. Zero means your plan includes none."""
     stops_at: Optional[int] = Field(alias="stopsAt")
     """Where we start refusing new use until the period resets. It equals `limit` when the count stops at its limit. It is higher when the count keeps running for a while past it. Null means we never refuse it."""
-    state: Literal["within", "grace", "stopped", "over"]
-    """Where the count stands. `within` is under the limit. `grace` is past the limit, still running until `stopsAt`. `stopped` means we refuse new use until `periodEnd`. `over` is past the limit of a count we never refuse."""
+    state: Literal["within", "overage", "grace", "stopped", "over"]
+    """Where the count stands. `within` is under the limit. `overage` is past the limit, with the extras billed until `stopsAt`, your spend cap. `grace` is past the limit, still running until `stopsAt`. `stopped` means we refuse new use until `periodEnd`. `over` is past the limit of a count we never refuse."""
+    overage: Optional[PlanUsageOverage] = None
+
+
+class PlanUsageOverage(BaseModel):
+    """Set when your plan bills extras past `limit`, up to a spend cap. Absent otherwise."""
+
+    label: str
+    """What the extras are called."""
+    rate: str
+    """What the extras cost on your plan."""
+    extra_units: int = Field(alias="extraUnits")
+    """How far past `limit` the count went this period. It stops growing at the spend cap."""
+    cost_cents: int = Field(alias="costCents")
+    """What the extras cost so far, in US cents. You pay for them with the next monthly invoice."""
+    cap_cents: int = Field(alias="capCents")
+    """Your spend cap for the extras, in US cents a month. At the cap, we refuse new use until the period resets."""
+    default_cap_cents: int = Field(alias="defaultCapCents")
+    """The spend cap your plan starts with, in US cents a month."""
+    cap_is_default: bool = Field(alias="capIsDefault")
+    """True while no one has changed the spend cap."""
 
 
 class TeamPage(BaseModel):
@@ -524,6 +544,10 @@ class Credit(BaseModel):
     created_by_user_id: Optional[str] = Field(alias="createdByUserId")
     """The person who added the credits, or null when a workspace API key did."""
     created_at: datetime = Field(alias="createdAt")
+    period_start: Optional[datetime] = Field(alias="periodStart")
+    """On a limit that resets, when the period these credits went to began. Null on a balance."""
+    period_end: Optional[datetime] = Field(alias="periodEnd")
+    """On a limit that resets, when that period ends, and the credits with it. Null on a balance."""
 
 
 class SubjectRef(BaseModel):
@@ -550,7 +574,7 @@ class CreditInput(BaseModel):
     amount: int
     """The credits to add, or a negative number to take them back. It can't be 0."""
     note: Optional[str] = None
-    """Why the balance changed. It's required when `amount` is negative."""
+    """Why you added or took back credits. It's required when `amount` is negative."""
 
 
 class CheckDecisionReasonSubject(BaseModel):
@@ -608,6 +632,26 @@ class CheckLimit(BaseModel):
     """What's left in the current window."""
     resets_at: Optional[datetime] = Field(alias="resetsAt")
     """When the window resets. For a rolling limit, it's when the oldest use leaves the window. It's null when nothing will reset: a balance (`total`), a `concurrent` limit, or a rolling limit with nothing in use."""
+
+
+class PlanLimitEnvelopeErrorDetail(BaseModel):
+    path: str
+    message: str
+
+
+class PlanLimitEnvelopeError(BaseModel):
+    code: str
+    message: str
+    request_id: Optional[str] = Field(default=None, alias="requestId")
+    docs: Optional[str] = None
+    """A link to this error code's entry in the documentation, which says how to fix it."""
+    details: Optional[List[PlanLimitEnvelopeErrorDetail]] = None
+    reason: Optional[Literal["spend_cap"]] = None
+    """`spend_cap` when the workspace's extra checks reached its monthly spend cap. Absent when it's past its plan's allowance."""
+
+
+class PlanLimitEnvelope(BaseModel):
+    error: PlanLimitEnvelopeError
 
 
 class CheckRequestShared(BaseModel):
@@ -801,7 +845,7 @@ class UsageOverviewLimitCreditsLatest(BaseModel):
 
 
 class UsageOverviewLimitCredits(BaseModel):
-    """For a balance (window `total`): the credits added and taken back in the range, and the latest of them, newest first. Without a range, every credit counts. Null for other limits."""
+    """The credits added and taken back in the range, and the latest of them, newest first. On a balance (window `total`), every credit counts when you send no range. On a limit that resets, they're the top-ups in the current window or the range, or null when there were none. Null for rolling and concurrent limits."""
 
     added: int
     """The credits added in the range."""
@@ -825,7 +869,7 @@ class UsageOverviewLimit(BaseModel):
     total: UsageTotal
     subjects: List[UsageOverviewLimitSubject]
     credits: Optional[UsageOverviewLimitCredits]
-    """For a balance (window `total`): the credits added and taken back in the range, and the latest of them, newest first. Without a range, every credit counts. Null for other limits."""
+    """The credits added and taken back in the range, and the latest of them, newest first. On a balance (window `total`), every credit counts when you send no range. On a limit that resets, they're the top-ups in the current window or the range, or null when there were none. Null for rolling and concurrent limits."""
 
 
 class UsageOverview(BaseModel):
@@ -856,6 +900,8 @@ class SubjectBudget(BaseModel):
     amount: int
     used: int
     remaining: int
+    credited: int
+    """On a limit that resets, the credits added to this period (top-ups). They're already in `remaining`, so the period allows `amount` plus `credited`. 0 on a balance."""
     resets_at: Optional[str] = Field(alias="resetsAt")
 
 
@@ -903,6 +949,8 @@ class StandingLimit(BaseModel):
     used: int
     remaining: int
     """What's left. For a balance, it can be more than `amount` once you add credits."""
+    credited: int
+    """On a limit that resets, the credits added to this period (top-ups). They're already in `remaining`, so the period allows `amount` plus `credited`. 0 on a balance."""
     resets_at: Optional[datetime] = Field(alias="resetsAt")
 
 
@@ -985,5 +1033,5 @@ class LimitInputSubjectParam(_LimitInputSubjectParamRequired, total=False):
     id: Optional[str]  # One subject's ID. Leave it out, or send null, to cover every subject of the kind. A limit for one su
 
 
-for _model in (UserMe, UserMembership, ErrorEnvelopeErrorDetail, ErrorEnvelopeError, ErrorEnvelope, Workspace, AuditEventPage, AuditEventActor, AuditEventCredential, AuditEvent, MemberPage, Member, InvitationPage, Invitation, ApprovalActionPage, ApprovalAction, ApprovalRequestSecret, ApprovalRequest, ApprovalRedemption, PlanUsage, PlanUsageCount, TeamPage, Team, WebhookEndpointPage, WebhookEndpoint, WebhookDeliveryOutcome, WebhookDeliveryPage, WebhookDelivery, EventTypePage, EventType, LimitPage, LimitOverrideFile, LimitOverride, Limit, LimitSubject, LimitInput, LimitInputSubject, LimitPatchSubject, LimitPatchOverride, LimitPatch, LimitSyncResultUpdatedChangesValue, LimitSyncResultUpdated, LimitSyncResultRestored, LimitSyncResultKinds, LimitSyncResult, LimitSyncInputKind, LimitSyncInput, LimitSyncEntry, Credit, SubjectRef, CreditPage, CreditInputSubject, CreditInput, CheckDecisionReasonSubject, CheckDecisionReason, CheckDecisionReservation, CheckDecision, CheckLimit, CheckRequestShared, CheckRequest, CheckSubject, Reservation, ReservationExtend, ReservationCommit, CheckList, Check, NamedSubjectRef, CheckRefusal, UsageBySubjectRange, UsageBySubjectSubjectSubject, UsageBySubjectSubject, UsageBySubject, UsageSeriesPoint, UsageSeries, UsageTotal, UsageOverviewRange, UsageOverviewLimitSubjectSubject, UsageOverviewLimitSubject, UsageOverviewLimitCreditsLatestSubject, UsageOverviewLimitCreditsLatest, UsageOverviewLimitCredits, UsageOverviewLimit, UsageOverview, SubjectDetail, SubjectBudget, SubjectLink, Subject, SubjectStanding, StandingLimit, SubjectUpdate, SubjectResetResult, SubjectReset, SubjectImportResult, SubjectImport, SubjectImportItem, SubjectList, SubjectListItem,):
+for _model in (UserMe, UserMembership, ErrorEnvelopeErrorDetail, ErrorEnvelopeError, ErrorEnvelope, Workspace, AuditEventPage, AuditEventActor, AuditEventCredential, AuditEvent, MemberPage, Member, InvitationPage, Invitation, ApprovalActionPage, ApprovalAction, ApprovalRequestSecret, ApprovalRequest, ApprovalRedemption, PlanUsage, PlanUsageCount, PlanUsageOverage, TeamPage, Team, WebhookEndpointPage, WebhookEndpoint, WebhookDeliveryOutcome, WebhookDeliveryPage, WebhookDelivery, EventTypePage, EventType, LimitPage, LimitOverrideFile, LimitOverride, Limit, LimitSubject, LimitInput, LimitInputSubject, LimitPatchSubject, LimitPatchOverride, LimitPatch, LimitSyncResultUpdatedChangesValue, LimitSyncResultUpdated, LimitSyncResultRestored, LimitSyncResultKinds, LimitSyncResult, LimitSyncInputKind, LimitSyncInput, LimitSyncEntry, Credit, SubjectRef, CreditPage, CreditInputSubject, CreditInput, CheckDecisionReasonSubject, CheckDecisionReason, CheckDecisionReservation, CheckDecision, CheckLimit, PlanLimitEnvelopeErrorDetail, PlanLimitEnvelopeError, PlanLimitEnvelope, CheckRequestShared, CheckRequest, CheckSubject, Reservation, ReservationExtend, ReservationCommit, CheckList, Check, NamedSubjectRef, CheckRefusal, UsageBySubjectRange, UsageBySubjectSubjectSubject, UsageBySubjectSubject, UsageBySubject, UsageSeriesPoint, UsageSeries, UsageTotal, UsageOverviewRange, UsageOverviewLimitSubjectSubject, UsageOverviewLimitSubject, UsageOverviewLimitCreditsLatestSubject, UsageOverviewLimitCreditsLatest, UsageOverviewLimitCredits, UsageOverviewLimit, UsageOverview, SubjectDetail, SubjectBudget, SubjectLink, Subject, SubjectStanding, StandingLimit, SubjectUpdate, SubjectResetResult, SubjectReset, SubjectImportResult, SubjectImport, SubjectImportItem, SubjectList, SubjectListItem,):
     _model.model_rebuild()
