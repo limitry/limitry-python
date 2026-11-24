@@ -4,7 +4,7 @@ The Limitry Python SDK puts a limit around costly work in a `with` block: `guard
 
 [![A $2 AI budget for one of your users: three calls are charged, and the next is refused before the AI runs.](https://media.limitry.com/launch/readme-20261122-0258.gif)](https://limitry.com/#demo)
 
-[▶ Watch the 44-second demo](https://limitry.com/#demo)
+[▶ Watch the 40-second demo](https://limitry.com/#demo)
 
 Limitry is the limits, credits and budgets layer for the software you build: give each of your users, teams, tenants, API keys or agents an allowance, and before any costly request one call tells your code whether it may happen.
 
@@ -58,10 +58,13 @@ except LimitReachedError as error:
     print(f"Try again in {error.retry_after_seconds} seconds")
 ```
 
-A refusal raises `LimitReachedError`. If Limitry can't answer within
-`timeout` (1.5 seconds by default), each limit's fail mode decides:
-`open` lets the work run, and `closed` raises `UnavailableError`. Both
-errors are a `LimitryError`.
+A refusal raises `LimitReachedError`. When Limitry can't decide, each
+limit's fail mode does: `open` lets the work run, and `closed` raises
+`UnavailableError`. That happens on a network error or a 5xx, with no
+answer within `timeout` (1.5 seconds by default), past your plan's
+allowance, or when too many refused checks trip the flood stop. Both
+errors are a `LimitryError`. Any other 4xx, such as a bad key, raises an
+`APIError`.
 
 ## Everything else
 

@@ -2,6 +2,10 @@
 
 What changed in the Limitry Python SDK (`limitry`). Generated from the source on each release; newest first.
 
+## 1.0.0rc20 (2026-11-24)
+
+No user-facing changes.
+
 ## 1.0.0rc19 (2026-11-24)
 
 ### Added
@@ -93,16 +97,16 @@ No user-facing changes.
   Busiest now counts every subject a check names, so a busy team or
   organization pool shows there.
 - Subjects can now have an optional name and labels. Set them with
-  `PUT /v1/subjects/{kind}/{id}/names` (`limitry subjects set`), or name
-  up to 1,000 at once with `POST /v1/subjects/import`.
-  `DELETE /v1/subjects/{kind}/{id}` erases them. Checks never need them,
+  `PATCH /v1/subjects/{subjectKind}/{subjectId}` (`limitry subjects
+  update`), or name up to 1,000 at once with `POST /v1/subjects/import`.
+  `DELETE /v1/subjects/{subjectKind}/{subjectId}/names` erases them. Checks never need them,
   and every limit works with IDs alone.
 
   `GET /v1/subjects` lists and searches subjects (`limitry subjects
-  list`). `GET /v1/subjects/{kind}/{id}` now also returns a subject's
+  list`). `GET /v1/subjects/{subjectKind}/{subjectId}` now also returns a subject's
   budgets and the subjects it's checked with, with what was spent within
-  each budget. `GET /v1/checks/recent` lists the last 3 days' checks
-  (`limitry checks recent`).
+  each budget. `GET /v1/checks` lists the last 3 days' checks
+  (`limitry checks list`).
 
   In the app, the new **Who** page lists every subject your checks name,
   with filters and search. Each subject has its own page: its budgets,
@@ -118,7 +122,7 @@ No user-facing changes.
   What `limitry.json` sets is now locked in the app and the API, and says
   so: its limits, and its kinds when it has them. An owner or admin can
   override one until the next sync, with a reason the audit log keeps.
-  The next sync puts the file's values back, `limitry sync --preview`
+  The next sync puts the file's values back, `limitry sync --dry-run`
   lists those overrides, and whoever made one gets a notification.
 
 ### Changed
